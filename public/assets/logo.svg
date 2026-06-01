@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300">
+<rect width="300" height="300" fill="white"/>
+<circle cx="150" cy="102" r="58" fill="#9ACA3C"/>
+<path d="M101 111 C117 147, 184 148, 200 111" fill="none" stroke="#2D3A7C" stroke-width="11" stroke-linecap="round"/>
+<circle cx="127" cy="91" r="9" fill="#2D3A7C"/>
+<circle cx="174" cy="91" r="9" fill="#2D3A7C"/>
+<path d="M95 57 C118 24, 177 20, 206 57" fill="none" stroke="#E92777" stroke-width="10" stroke-linecap="round"/>
+<text x="150" y="202" text-anchor="middle" font-family="Arial Black, Arial" font-size="45" fill="#E92777">PLAZITA</text>
+<text x="150" y="235" text-anchor="middle" font-family="Arial Black, Arial" font-size="26" fill="#F07D21">GOURMET</text>
+<text x="150" y="260" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" fill="#7BAA22">CON SABOR OAXAQUEÑO</text>
+</svg>
