@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
@@ -7,20 +8,39 @@ const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const ADMIN_CODE = process.env.ADMIN_CODE || "PLAZITA-ADMIN-2026";
 
 app.set("trust proxy", 1);
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://localhost:3000",
   process.env.FRONTEND_URL,
-].filter(Boolean);
+  process.env.CORS_ORIGIN,
+]
+  .filter(Boolean)
+  .flatMap((origin) => String(origin).split(","))
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
-    origin: allowedOrigins.length ? allowedOrigins : true,
+    origin(origin, callback) {
+      // Permite Postman, el mismo servidor y despliegues de Render.
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Para evitar bloqueos mientras pruebas front/back separados en Render.
+      // Cuando ya tengas tu URL final, puedes poner FRONTEND_URL en Render.
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
+
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
@@ -28,9 +48,7 @@ const pool = new Pool(
   process.env.DATABASE_URL
     ? {
         connectionString: process.env.DATABASE_URL,
-        ssl: {
-          rejectUnauthorized: false,
-        },
+        ssl: { rejectUnauthorized: false },
       }
     : {
         host: process.env.DB_HOST || "localhost",
@@ -40,8 +58,6 @@ const pool = new Pool(
         password: process.env.DB_PASSWORD || "1234",
       }
 );
-
-const ADMIN_CODE = process.env.ADMIN_CODE || "PLAZITA-ADMIN-2026";
 
 function normalizarUsuario(row) {
   if (!row) return null;
@@ -61,6 +77,10 @@ function codigoProductoValido(codigo) {
   return /^[A-Z]{2,5}-[0-9]{4,12}$/.test(String(codigo || "").trim().toUpperCase());
 }
 
+function crearCodigoEntrega() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 async function obtenerColumnas(tabla) {
   const { rows } = await pool.query(
     `
@@ -75,6 +95,43 @@ async function obtenerColumnas(tabla) {
   return new Set(rows.map((r) => r.column_name));
 }
 
+async function existeTabla(tabla) {
+  const { rows } = await pool.query(
+    `
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name = $1
+    ) AS existe;
+    `,
+    [tabla]
+  );
+
+  return Boolean(rows[0]?.existe);
+}
+
+async function inicializarBaseDatos() {
+  try {
+    if (await existeTabla("usuario")) {
+      await pool.query(`ALTER TABLE usuario ADD COLUMN IF NOT EXISTS activo BOOLEAN DEFAULT true;`);
+      await pool.query(`UPDATE usuario SET activo = true WHERE activo IS NULL;`);
+    }
+
+    if (await existeTabla("pedido")) {
+      await pool.query(`ALTER TABLE pedido ADD COLUMN IF NOT EXISTS etapa INTEGER DEFAULT 0;`);
+      await pool.query(`ALTER TABLE pedido ADD COLUMN IF NOT EXISTS codigo_entrega VARCHAR(10);`);
+      await pool.query(`ALTER TABLE pedido ADD COLUMN IF NOT EXISTS fecha_entregado TIMESTAMP NULL;`);
+      await pool.query(`UPDATE pedido SET etapa = 0 WHERE etapa IS NULL;`);
+      await pool.query(`UPDATE pedido SET codigo_entrega = LPAD((FLOOR(RANDOM() * 9000) + 1000)::TEXT, 4, '0') WHERE codigo_entrega IS NULL OR codigo_entrega = '';`);
+    }
+
+    console.log("Base de datos verificada correctamente");
+  } catch (error) {
+    console.warn("No se pudieron crear/verificar columnas extra:", error.message);
+  }
+}
+
 function manejarError(res, error, mensaje = "Error del servidor") {
   console.error(error);
 
@@ -83,10 +140,106 @@ function manejarError(res, error, mensaje = "Error del servidor") {
   }
 
   if (error && error.code === "23503") {
-    return res.status(400).json({ message: "Hay datos relacionados que impiden completar la acción" });
+    return res.status(400).json({
+      message: "Hay datos relacionados que impiden completar la acción. Usa desactivar en lugar de borrar.",
+    });
   }
 
   return res.status(500).json({ message: mensaje, detalle: error.message });
+}
+
+function urlBase(req) {
+  return `${req.protocol}://${req.get("host")}`;
+}
+
+function construirInsertSQL(tabla, datos) {
+  const campos = Object.keys(datos);
+  const valores = Object.values(datos);
+  const marcas = campos.map((_, index) => `$${index + 1}`).join(", ");
+
+  return {
+    sql: `INSERT INTO ${tabla} (${campos.join(", ")}) VALUES (${marcas}) RETURNING *;`,
+    valores,
+  };
+}
+
+function construirUpdateSQL(tabla, idCampo, idValor, datos) {
+  const campos = Object.keys(datos);
+  const valores = Object.values(datos);
+  const sets = campos.map((campo, index) => `${campo} = $${index + 1}`).join(", ");
+  valores.push(idValor);
+
+  return {
+    sql: `UPDATE ${tabla} SET ${sets} WHERE ${idCampo} = $${valores.length} RETURNING *;`,
+    valores,
+  };
+}
+
+async function obtenerPedidosBase(whereSQL = "", params = []) {
+  const columnasPedido = await obtenerColumnas("pedido");
+  const tieneEtapa = columnasPedido.has("etapa");
+  const tieneCodigoEntrega = columnasPedido.has("codigo_entrega");
+  const tieneFechaEntregado = columnasPedido.has("fecha_entregado");
+  const tieneEnvio = columnasPedido.has("envio");
+  const tieneDireccion = columnasPedido.has("direccion_envio");
+
+  const { rows: pedidos } = await pool.query(
+    `
+    SELECT
+      p.id_pedido,
+      p.id_usuario,
+      p.folio,
+      p.fecha,
+      p.subtotal,
+      p.iva,
+      ${tieneEnvio ? "p.envio" : "0"} AS envio,
+      p.total,
+      COALESCE(p.estado, 'actual') AS estado,
+      ${tieneEtapa ? "COALESCE(p.etapa, 0)" : "0"} AS etapa,
+      ${tieneCodigoEntrega ? "COALESCE(p.codigo_entrega, '')" : "''"} AS codigo_entrega,
+      ${tieneFechaEntregado ? "p.fecha_entregado" : "NULL"} AS fecha_entregado,
+      ${tieneDireccion ? "p.direccion_envio" : "''"} AS direccion_envio,
+      u.nombre AS cliente_nombre,
+      u.correo AS cliente_correo,
+      u.telefono AS cliente_telefono
+    FROM pedido p
+    JOIN usuario u ON u.id_usuario = p.id_usuario
+    ${whereSQL}
+    ORDER BY p.fecha DESC;
+    `,
+    params
+  );
+
+  const ids = pedidos.map((p) => p.id_pedido);
+  if (!ids.length) return [];
+
+  const { rows: detalles } = await pool.query(
+    `
+    SELECT
+      dp.id_pedido,
+      dp.id_producto,
+      pr.nombre,
+      dp.cantidad,
+      dp.precio_unitario,
+      dp.subtotal,
+      dp.subtotal AS importe
+    FROM detalle_pedido dp
+    LEFT JOIN producto pr ON pr.id_producto = dp.id_producto
+    WHERE dp.id_pedido = ANY($1::int[])
+    ORDER BY dp.id_pedido, dp.id_producto;
+    `,
+    [ids]
+  );
+
+  return pedidos.map((pedido) => ({
+    ...pedido,
+    cliente: {
+      nombre: pedido.cliente_nombre,
+      correo: pedido.cliente_correo,
+      telefono: pedido.cliente_telefono,
+    },
+    items: detalles.filter((detalle) => detalle.id_pedido === pedido.id_pedido),
+  }));
 }
 
 app.get("/api", (_req, res) => {
@@ -100,16 +253,22 @@ app.get("/api", (_req, res) => {
       "/api/empresa",
       "/api/usuarios",
       "/api/promociones",
+      "/api/pedidos",
+      "/api/pedidos/usuario/:id_usuario",
     ],
   });
 });
 
 app.get("/api/health", async (_req, res) => {
-  const r = await pool.query("SELECT NOW() AS fecha");
-  res.json({ ok: true, db: r.rows[0].fecha });
+  try {
+    const r = await pool.query("SELECT NOW() AS fecha");
+    res.json({ ok: true, db: r.rows[0].fecha });
+  } catch (error) {
+    manejarError(res, error, "No se pudo conectar con la base de datos");
+  }
 });
 
-app.get("/api/productos", async (_req, res) => {
+app.get("/api/productos", async (req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -135,7 +294,7 @@ app.get("/api/productos", async (_req, res) => {
       ORDER BY p.id_producto;
     `);
 
-    const base = `${_req.protocol}://${_req.get("host")}`;
+    const base = urlBase(req);
     res.json(rows.map((p) => ({ ...p, imagen: p.imagen ? base + p.imagen : null })));
   } catch (error) {
     manejarError(res, error, "No se pudieron cargar los productos");
@@ -174,7 +333,7 @@ app.get("/api/categorias", async (req, res) => {
       ORDER BY id_categoria;
     `);
 
-    const base = `${req.protocol}://${req.get("host")}`;
+    const base = urlBase(req);
     res.json(rows.map((c) => ({ ...c, imagen: c.imagen ? base + c.imagen : null })));
   } catch (error) {
     manejarError(res, error, "No se pudieron cargar las categorías");
@@ -222,9 +381,13 @@ app.get("/api/empresa", async (req, res) => {
 
     if (!rows.length) return res.status(404).json({ message: "No hay datos de empresa" });
 
-    const base = `${req.protocol}://${req.get("host")}`;
+    const base = urlBase(req);
     const empresa = rows[0];
-    res.json({ ...empresa, tiene_logo: Boolean(empresa.logo), logo: empresa.logo ? base + empresa.logo : null });
+    res.json({
+      ...empresa,
+      tiene_logo: Boolean(empresa.logo),
+      logo: empresa.logo ? base + empresa.logo : null,
+    });
   } catch (error) {
     manejarError(res, error, "No se pudo cargar la empresa");
   }
@@ -249,18 +412,20 @@ app.post("/api/login", async (req, res) => {
   try {
     const correo = String(req.body.correo || "").trim().toLowerCase();
     const contrasena = String(req.body.contrasena || req.body.password || "");
+    const columnas = await obtenerColumnas("usuario");
+    const filtroActivo = columnas.has("activo") ? "AND activo = true" : "";
 
     if (!correo || !contrasena) {
       return res.status(400).json({ message: "Escribe correo y contraseña" });
     }
 
     const { rows } = await pool.query(
-      "SELECT * FROM usuario WHERE LOWER(correo) = LOWER($1) LIMIT 1",
+      `SELECT * FROM usuario WHERE LOWER(correo) = LOWER($1) ${filtroActivo} LIMIT 1`,
       [correo]
     );
 
     if (!rows.length) {
-      return res.status(404).json({ message: "Correo no encontrado" });
+      return res.status(404).json({ message: "Correo no encontrado o cuenta desactivada" });
     }
 
     const usuario = rows[0];
@@ -296,7 +461,7 @@ app.post("/api/registro", async (req, res) => {
       return res.status(400).json({ message: "El teléfono debe tener 10 números" });
     }
 
-    if (!['cliente', 'admin', 'empleado', 'repartidor'].includes(rol)) {
+    if (!["cliente", "admin", "empleado", "repartidor"].includes(rol)) {
       return res.status(400).json({ message: "Rol no válido" });
     }
 
@@ -304,11 +469,14 @@ app.post("/api/registro", async (req, res) => {
       return res.status(403).json({ message: "Código de administrador incorrecto" });
     }
 
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       INSERT INTO usuario (nombre, correo, contrasena, telefono, rol)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id_usuario, nombre, correo, telefono, rol, fecha_registro;
-    `, [nombre, correo, contrasena, telefono, rol]);
+      `,
+      [nombre, correo, contrasena, telefono, rol]
+    );
 
     res.status(201).json(rows[0]);
   } catch (error) {
@@ -318,11 +486,16 @@ app.post("/api/registro", async (req, res) => {
 
 app.get("/api/usuarios", async (_req, res) => {
   try {
+    const columnas = await obtenerColumnas("usuario");
+    const filtroActivo = columnas.has("activo") ? "WHERE activo = true" : "";
+
     const { rows } = await pool.query(`
       SELECT id_usuario, nombre, correo, telefono, rol, fecha_registro
       FROM usuario
+      ${filtroActivo}
       ORDER BY id_usuario;
     `);
+
     res.json(rows);
   } catch (error) {
     manejarError(res, error, "No se pudieron cargar los usuarios");
@@ -360,32 +533,14 @@ app.put("/api/usuarios/:id", async (req, res) => {
       return res.status(409).json({ message: "Ese correo ya está registrado" });
     }
 
-    const sets = ["nombre = $1", "correo = $2", "telefono = $3"];
-    const params = [nombre, correo, telefono];
-    let i = params.length + 1;
+    const datos = { nombre, correo, telefono };
+    if (contrasena) datos.contrasena = contrasena;
+    if (rolSeguro) datos.rol = rolSeguro;
 
-    if (contrasena) {
-      sets.push(`contrasena = $${i}`);
-      params.push(contrasena);
-      i++;
-    }
-
-    if (rolSeguro) {
-      sets.push(`rol = $${i}`);
-      params.push(rolSeguro);
-      i++;
-    }
-
-    params.push(id);
-
+    const { sql, valores } = construirUpdateSQL("usuario", "id_usuario", id, datos);
     const { rows } = await pool.query(
-      `
-      UPDATE usuario
-      SET ${sets.join(", ")}
-      WHERE id_usuario = $${i}
-      RETURNING id_usuario, nombre, correo, telefono, rol, fecha_registro;
-      `,
-      params
+      sql.replace("RETURNING *", "RETURNING id_usuario, nombre, correo, telefono, rol, fecha_registro"),
+      valores
     );
 
     if (!rows.length) return res.status(404).json({ message: "Usuario no encontrado" });
@@ -398,9 +553,12 @@ app.put("/api/usuarios/:id", async (req, res) => {
 
 app.delete("/api/usuarios/:id", async (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const columnas = await obtenerColumnas("usuario");
+
     const actual = await pool.query(
       "SELECT id_usuario, rol FROM usuario WHERE id_usuario = $1 LIMIT 1",
-      [req.params.id]
+      [id]
     );
 
     if (!actual.rows.length) return res.status(404).json({ message: "Usuario no encontrado" });
@@ -409,11 +567,17 @@ app.delete("/api/usuarios/:id", async (req, res) => {
       return res.status(403).json({ message: "Las cuentas de administrador no se pueden eliminar" });
     }
 
-    const { rowCount } = await pool.query("DELETE FROM usuario WHERE id_usuario = $1", [req.params.id]);
+    if (columnas.has("activo")) {
+      const { rowCount } = await pool.query("UPDATE usuario SET activo = false WHERE id_usuario = $1", [id]);
+      if (!rowCount) return res.status(404).json({ message: "Usuario no encontrado" });
+      return res.json({ ok: true, message: "Usuario desactivado correctamente" });
+    }
+
+    const { rowCount } = await pool.query("DELETE FROM usuario WHERE id_usuario = $1", [id]);
     if (!rowCount) return res.status(404).json({ message: "Usuario no encontrado" });
-    res.json({ ok: true });
+    res.json({ ok: true, message: "Usuario eliminado correctamente" });
   } catch (error) {
-    manejarError(res, error, "No se pudo eliminar el usuario");
+    manejarError(res, error, "No se pudo eliminar/desactivar el usuario");
   }
 });
 
@@ -441,11 +605,14 @@ app.post("/api/admin/usuarios", async (req, res) => {
       return res.status(400).json({ message: "Rol no válido" });
     }
 
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       INSERT INTO usuario (nombre, correo, contrasena, telefono, rol)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING id_usuario, nombre, correo, telefono, rol, fecha_registro;
-    `, [nombre, correo, contrasena, telefono, rol]);
+      `,
+      [nombre, correo, contrasena, telefono, rol]
+    );
 
     res.status(201).json(rows[0]);
   } catch (error) {
@@ -485,34 +652,33 @@ app.post("/api/productos", async (req, res) => {
       return res.status(400).json({ message: "Stock no válido" });
     }
 
-    const { rows } = await pool.query(`
+    const { rows } = await pool.query(
+      `
       INSERT INTO producto
         (codigo_producto, id_categoria, id_usuario, nombre, presentacion, descripcion, historia, precio, stock, estado, imagen, imagen_mime, video)
       VALUES
         ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *;
-    `, [
-      codigo_producto,
-      id_categoria,
-      id_usuario,
-      nombre,
-      presentacion,
-      descripcion,
-      historia,
-      precio,
-      stock,
-      estado,
-      imagenBuffer,
-      imagen_mime,
-      video,
-    ]);
+      `,
+      [
+        codigo_producto,
+        id_categoria,
+        id_usuario,
+        nombre,
+        presentacion,
+        descripcion,
+        historia,
+        precio,
+        stock,
+        estado,
+        imagenBuffer,
+        imagen_mime,
+        video,
+      ]
+    );
 
     res.status(201).json(rows[0]);
   } catch (error) {
-    if (error.code === "23505") {
-      return res.status(409).json({ message: "Ya existe un producto con ese ID" });
-    }
-
     manejarError(res, error, "No se pudo guardar el producto");
   }
 });
@@ -602,10 +768,6 @@ app.put("/api/productos/:id", async (req, res) => {
 
     res.json(rows[0]);
   } catch (error) {
-    if (error.code === "23505") {
-      return res.status(409).json({ message: "Ya existe un producto con ese ID" });
-    }
-
     manejarError(res, error, "No se pudo actualizar el producto");
   }
 });
@@ -625,7 +787,6 @@ app.delete("/api/productos/:id", async (req, res) => {
   }
 });
 
-
 app.patch("/api/productos/:id/busqueda", async (req, res) => {
   try {
     await pool.query(
@@ -642,10 +803,18 @@ app.post("/api/comprar", async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const { id_usuario, carrito, direccion_envio = "", envio = 0 } = req.body;
+    const {
+      id_usuario,
+      carrito,
+      direccion_envio = "Compra en línea",
+      envio = 0,
+      codigo_entrega = crearCodigoEntrega(),
+    } = req.body;
 
     if (!id_usuario) return res.status(400).json({ message: "Falta el usuario" });
-    if (!Array.isArray(carrito) || carrito.length === 0) return res.status(400).json({ message: "El carrito está vacío" });
+    if (!Array.isArray(carrito) || carrito.length === 0) {
+      return res.status(400).json({ message: "El carrito está vacío" });
+    }
 
     await client.query("BEGIN");
 
@@ -656,7 +825,12 @@ app.post("/api/comprar", async (req, res) => {
       const idProducto = Number(item.id_producto || item.id);
       const cantidad = Number(item.cantidad || 1);
 
-      const producto = await client.query(`
+      if (!idProducto || !Number.isFinite(cantidad) || cantidad <= 0) {
+        throw new Error("Producto o cantidad no válida");
+      }
+
+      const producto = await client.query(
+        `
         SELECT
           p.id_producto,
           p.nombre,
@@ -676,7 +850,9 @@ app.post("/api/comprar", async (req, res) => {
         WHERE p.id_producto = $1
           AND p.estado = true
         FOR UPDATE;
-      `, [idProducto]);
+        `,
+        [idProducto]
+      );
 
       if (!producto.rows.length) throw new Error(`Producto no encontrado: ${idProducto}`);
 
@@ -685,52 +861,81 @@ app.post("/api/comprar", async (req, res) => {
 
       const descuentoPromocion = Number(p.descuento_promocion || 0);
       const precioBase = Number(p.precio);
-      const precio = descuentoPromocion > 0
-        ? Number((precioBase - precioBase * (descuentoPromocion / 100)).toFixed(2))
-        : precioBase;
-      const lineaSubtotal = precio * cantidad;
+      const precio =
+        descuentoPromocion > 0
+          ? Number((precioBase - precioBase * (descuentoPromocion / 100)).toFixed(2))
+          : precioBase;
+      const lineaSubtotal = Number((precio * cantidad).toFixed(2));
       subtotal += lineaSubtotal;
 
       productosCompra.push({ ...p, cantidad, precio, subtotal: lineaSubtotal });
     }
 
+    subtotal = Number(subtotal.toFixed(2));
     const iva = Number((subtotal * 0.16).toFixed(2));
     const envioNumero = Number(envio || 0);
     const total = Number((subtotal + iva + envioNumero).toFixed(2));
     const folio = `PG-${Date.now()}`;
+    const columnasPedido = await obtenerColumnas("pedido");
 
-    const pedido = await client.query(`
-      INSERT INTO pedido (id_usuario, folio, subtotal, iva, envio, total, estado, direccion_envio)
-      VALUES ($1, $2, $3, $4, $5, $6, 'pendiente', $7)
-      RETURNING *;
-    `, [id_usuario, folio, subtotal, iva, envioNumero, total, direccion_envio]);
+    const datosPedido = {
+      id_usuario,
+      folio,
+      subtotal,
+      iva,
+      total,
+      estado: "actual",
+    };
 
+    if (columnasPedido.has("envio")) datosPedido.envio = envioNumero;
+    if (columnasPedido.has("direccion_envio")) datosPedido.direccion_envio = direccion_envio;
+    if (columnasPedido.has("etapa")) datosPedido.etapa = 0;
+    if (columnasPedido.has("codigo_entrega")) datosPedido.codigo_entrega = String(codigo_entrega || crearCodigoEntrega()).slice(0, 10);
+
+    const insertPedido = construirInsertSQL("pedido", datosPedido);
+    const pedido = await client.query(insertPedido.sql, insertPedido.valores);
     const idPedido = pedido.rows[0].id_pedido;
 
     for (const p of productosCompra) {
-      await client.query(`
+      await client.query(
+        `
         INSERT INTO detalle_pedido (id_pedido, id_producto, cantidad, precio_unitario, subtotal)
         VALUES ($1, $2, $3, $4, $5);
-      `, [idPedido, p.id_producto, p.cantidad, p.precio, p.subtotal]);
+        `,
+        [idPedido, p.id_producto, p.cantidad, p.precio, p.subtotal]
+      );
 
-      await client.query(`
+      await client.query(
+        `
         UPDATE producto
         SET stock = COALESCE(stock, 0) - $1,
             vendidos = COALESCE(vendidos, 0) + $1
         WHERE id_producto = $2;
-      `, [p.cantidad, p.id_producto]);
+        `,
+        [p.cantidad, p.id_producto]
+      );
 
-      await client.query(`
-        INSERT INTO reporte_venta (id_producto, id_pedido, cantidad_vendida, ingresos)
-        VALUES ($1, $2, $3, $4);
-      `, [p.id_producto, idPedido, p.cantidad, p.subtotal]).catch(() => null);
+      await client
+        .query(
+          `
+          INSERT INTO reporte_venta (id_producto, id_pedido, cantidad_vendida, ingresos)
+          VALUES ($1, $2, $3, $4);
+          `,
+          [p.id_producto, idPedido, p.cantidad, p.subtotal]
+        )
+        .catch(() => null);
     }
 
     await client.query("COMMIT");
 
     res.status(201).json({
       ok: true,
-      pedido: pedido.rows[0],
+      pedido: {
+        ...pedido.rows[0],
+        codigo_entrega: pedido.rows[0].codigo_entrega || codigo_entrega,
+        etapa: pedido.rows[0].etapa ?? 0,
+        estado: pedido.rows[0].estado || "actual",
+      },
       detalle: productosCompra,
       folio,
       subtotal,
@@ -746,16 +951,67 @@ app.post("/api/comprar", async (req, res) => {
   }
 });
 
+app.get("/api/pedidos", async (_req, res) => {
+  try {
+    const pedidos = await obtenerPedidosBase();
+    res.json(pedidos);
+  } catch (error) {
+    manejarError(res, error, "No se pudieron cargar los pedidos");
+  }
+});
+
+app.get("/api/pedidos/usuario/:id_usuario", async (req, res) => {
+  try {
+    const pedidos = await obtenerPedidosBase("WHERE p.id_usuario = $1", [req.params.id_usuario]);
+    res.json(pedidos);
+  } catch (error) {
+    manejarError(res, error, "No se pudieron cargar los pedidos del usuario");
+  }
+});
+
+app.patch("/api/pedidos/:id/estado", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const columnasPedido = await obtenerColumnas("pedido");
+
+    const datos = {};
+
+    if (columnasPedido.has("estado") && req.body.estado !== undefined) {
+      datos.estado = String(req.body.estado || "actual");
+    }
+
+    if (columnasPedido.has("etapa") && req.body.etapa !== undefined) {
+      datos.etapa = Number(req.body.etapa || 0);
+    }
+
+    if (columnasPedido.has("fecha_entregado") && req.body.fecha_entregado !== undefined) {
+      datos.fecha_entregado = req.body.fecha_entregado || null;
+    }
+
+    if (columnasPedido.has("codigo_entrega") && req.body.codigo_entrega !== undefined) {
+      datos.codigo_entrega = String(req.body.codigo_entrega || "").slice(0, 10);
+    }
+
+    if (!Object.keys(datos).length) {
+      return res.status(400).json({ message: "No hay datos válidos para actualizar" });
+    }
+
+    const { sql, valores } = construirUpdateSQL("pedido", "id_pedido", id, datos);
+    const { rows } = await pool.query(sql, valores);
+
+    if (!rows.length) return res.status(404).json({ message: "Pedido no encontrado" });
+
+    res.json(rows[0]);
+  } catch (error) {
+    manejarError(res, error, "No se pudo actualizar el pedido");
+  }
+});
+
+// Ruta antigua compatible con versiones anteriores del front.
 app.get("/api/pedidos/:id_usuario", async (req, res) => {
   try {
-    const { rows } = await pool.query(`
-      SELECT p.*, u.nombre AS cliente, u.correo
-      FROM pedido p
-      JOIN usuario u ON u.id_usuario = p.id_usuario
-      WHERE p.id_usuario = $1
-      ORDER BY p.fecha DESC;
-    `, [req.params.id_usuario]);
-    res.json(rows);
+    const pedidos = await obtenerPedidosBase("WHERE p.id_usuario = $1", [req.params.id_usuario]);
+    res.json(pedidos);
   } catch (error) {
     manejarError(res, error, "No se pudieron cargar los pedidos");
   }
@@ -856,7 +1112,6 @@ app.post("/api/testimonios", async (req, res) => {
   }
 });
 
-
 app.get("/api/promociones", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
@@ -891,15 +1146,11 @@ app.post("/api/promociones", async (req, res) => {
     const fecha_fin = req.body.fecha_fin || null;
 
     if (!id_usuario || !titulo || !descuento) {
-      return res.status(400).json({
-        message: "Faltan datos para registrar la promoción",
-      });
+      return res.status(400).json({ message: "Faltan datos para registrar la promoción" });
     }
 
     if (!Number.isFinite(descuento) || descuento <= 0 || descuento >= 100) {
-      return res.status(400).json({
-        message: "El descuento debe estar entre 1 y 99",
-      });
+      return res.status(400).json({ message: "El descuento debe estar entre 1 y 99" });
     }
 
     const { rows } = await pool.query(
@@ -920,15 +1171,7 @@ app.post("/api/promociones", async (req, res) => {
         CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
         imagen_mime;
       `,
-      [
-        id_usuario,
-        titulo,
-        tipo,
-        descuento,
-        fecha_inicio,
-        fecha_fin,
-        "true",
-      ]
+      [id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, true]
     );
 
     res.status(201).json(rows[0]);
@@ -940,22 +1183,22 @@ app.post("/api/promociones", async (req, res) => {
 // ==========================================
 // FRONTEND REACT / VITE EN PRODUCCIÓN
 // ==========================================
-// Cuando ejecutas "npm run build", Vite crea la carpeta "dist".
-// Render usará esta carpeta para mostrar tu página React.
-
 const distPath = path.join(__dirname, "dist");
 
-// Sirve archivos estáticos como CSS, JS, imágenes, etc.
-app.use(express.static(distPath));
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
 
-// Cualquier ruta que NO empiece con /api abre React.
-// Ejemplo: /admin, /carrito, /pedidos, /perfil
-app.get(/^(?!\/api).*/, (_req, res) => {
-  res.sendFile(path.join(distPath, "index.html"));
-});
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+} else {
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.status(404).send("Frontend no compilado. Ejecuta npm run build si este servicio también sirve React.");
+  });
+}
 
-// Render asigna el puerto automáticamente con process.env.PORT.
-// Localmente usará 3001.
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor conectado en el puerto ${PORT}`);
+inicializarBaseDatos().finally(() => {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Servidor conectado en el puerto ${PORT}`);
+  });
 });
