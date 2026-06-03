@@ -3,8 +3,8 @@ import emailjs from "@emailjs/browser";
 import "./App.css";
 
 const A = "/assets/";
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001/api";
-const ADMIN_CODE = "PLAZITA-ADMIN-2026";
+const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:3001/api").replace(/\/$/, "");
+const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || "PLAZITA-ADMIN-2026";
 
 function money(n) {
   return `$${Number(n || 0).toFixed(2)} MXN`;
@@ -226,6 +226,47 @@ function mapComentarioApi(t) {
   };
 }
 
+
+function mapPedidoApi(p) {
+  const items = Array.isArray(p.items)
+    ? p.items
+    : Array.isArray(p.detalles)
+    ? p.detalles
+    : Array.isArray(p.productos)
+    ? p.productos
+    : [];
+
+  const idPedido = p.id_pedido || p.id || p.folio || Date.now();
+
+  return {
+    id: idPedido,
+    id_pedido: p.id_pedido || p.id || null,
+    folio: p.folio || `PED-${idPedido}`,
+    fecha: p.fecha ? fechaTicket(p.fecha) : fechaTicket(),
+    cliente: {
+      nombre: p.cliente?.nombre || p.cliente_nombre || p.nombre_cliente || p.nombre || "Cliente",
+      correo: p.cliente?.correo || p.cliente_correo || p.correo || "",
+      telefono: p.cliente?.telefono || p.cliente_telefono || p.telefono || "",
+    },
+    items: items.map((item) => ({
+      id: item.id_producto || item.id || item.codigo_producto,
+      nombre: item.nombre || item.producto || item.nombre_producto || "Producto",
+      cantidad: Number(item.cantidad || 0),
+      precioUnitario: Number(item.precioUnitario || item.precio_unitario || item.precio || 0),
+      importe:
+        Number(item.importe || item.subtotal || 0) ||
+        Number(item.cantidad || 0) * Number(item.precioUnitario || item.precio_unitario || item.precio || 0),
+    })),
+    subtotal: Number(p.subtotal || 0),
+    iva: Number(p.iva || 0),
+    total: Number(p.total || 0),
+    estado: String(p.estado || "actual").toLowerCase() === "entregado" ? "entregado" : "actual",
+    etapa: Number(p.etapa || p.etapa_seguimiento || 0),
+    codigoEntrega: p.codigoEntrega || p.codigo_entrega || p.codigo || "",
+    fechaEntregado: p.fechaEntregado || p.fecha_entregado || null,
+  };
+}
+
 function estrellas(calificacion = 5) {
   const n = Math.max(1, Math.min(5, Number(calificacion || 5)));
   return "★".repeat(n) + "☆".repeat(5 - n);
@@ -415,7 +456,7 @@ export default function App() {
   const [video, setVideo] = useState(false);
   const [toast, setToast] = useState("");
   const [ultimoTicket, setUltimoTicket] = useState(null);
-  const [pedidos, setPedidos] = useState(() => leerStorage("pg_pedidos_cliente", []));
+  const [pedidos, setPedidos] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [correosSimulados, setCorreosSimulados] = useState(() => leerStorage("pg_correos_simulados", []));
   const [comentarios, setComentarios] = useState(() => leerStorage("pg_comentarios_publicos", []));
@@ -455,9 +496,6 @@ const categoriaServicios = {
     localStorage.setItem("pg_comentarios_publicos", JSON.stringify(comentarios));
   }, [comentarios]);
 
-  useEffect(() => {
-  localStorage.setItem("pg_pedidos_cliente", JSON.stringify(pedidos));
-}, [pedidos]);
 
   useEffect(() => {
     vistaRef.current = vista;
@@ -552,9 +590,27 @@ const categoriaServicios = {
   const cargarUsuarios = async () => {
     try {
       const data = await apiFetch("/usuarios");
-      setUsuarios(data.map(mapUsuarioApi));
-    } catch {
+      setUsuarios(Array.isArray(data) ? data.map(mapUsuarioApi) : []);
+    } catch (error) {
+      console.error(error);
       if (usuario) setUsuarios([usuario]);
+    }
+  };
+
+  const cargarPedidos = async () => {
+    if (!usuario) {
+      setPedidos([]);
+      return;
+    }
+
+    try {
+      const ruta = usuario.rol === "admin" ? "/pedidos" : `/pedidos/usuario/${usuario.id_usuario}`;
+      const data = await apiFetch(ruta);
+      setPedidos(Array.isArray(data) ? data.map(mapPedidoApi) : []);
+    } catch (error) {
+      console.error(error);
+      setPedidos([]);
+      mostrarToast("No se pudieron cargar los pedidos desde la BD");
     }
   };
 
@@ -645,7 +701,19 @@ const categoriaServicios = {
     if (usuario?.rol === "admin") {
       cargarUsuarios();
     }
+
+    if (usuario) {
+      cargarPedidos();
+    } else {
+      setPedidos([]);
+    }
   }, [usuario]);
+
+  useEffect(() => {
+    if (usuario && vista === "pedidos") {
+      cargarPedidos();
+    }
+  }, [vista, usuario]);
 
   const login = async ({ correo, password }) => {
     try {
@@ -820,8 +888,10 @@ const categoriaServicios = {
         try {
           await apiFetch(`/usuarios/${usuario.id_usuario}`, { method: "DELETE" });
           mostrarToast("Cuenta eliminada correctamente");
-        } catch {
-          mostrarToast("Sesión cerrada. Para borrar en BD falta el endpoint de eliminar usuario");
+        } catch (error) {
+          console.error(error);
+          mostrarToast(error.message || "No se pudo eliminar la cuenta porque tiene datos relacionados");
+          return;
         }
 
         setUsuario(null);
@@ -921,6 +991,7 @@ const categoriaServicios = {
 
     const subtotalLocal = carrito.reduce((a, p) => a + Number(p.descuento || p.precio) * p.cantidad, 0);
     const ivaLocal = subtotalLocal * 0.16;
+    const codigoEntrega = crearCodigoEntrega();
 
     const ticketBase = {
       folio: crearFolio(),
@@ -948,6 +1019,7 @@ const categoriaServicios = {
         body: JSON.stringify({
           id_usuario: usuario.id_usuario,
           direccion_envio: "Compra en línea",
+          codigo_entrega: codigoEntrega,
           carrito: carrito.map((item) => ({
             id_producto: item.id_producto,
             cantidad: item.cantidad,
@@ -978,27 +1050,28 @@ const categoriaServicios = {
         ...prev,
       ]);
 
-const nuevoPedido = {
-  id: ticket.folio,
-  folio: ticket.folio,
-  fecha: ticket.fecha,
-  cliente: ticket.cliente,
-  items: ticket.items,
-  subtotal: ticket.subtotal,
-  iva: ticket.iva,
-  total: ticket.total,
-  estado: "actual",
-  etapa: 0,
-  codigoEntrega: crearCodigoEntrega(),
-};
+      const pedidoPantalla = mapPedidoApi({
+        ...pedido,
+        id: pedido.id_pedido || pedido.id || ticket.folio,
+        folio: ticket.folio,
+        fecha: pedido.fecha || new Date(),
+        cliente: ticket.cliente,
+        items: ticket.items,
+        subtotal: ticket.subtotal,
+        iva: ticket.iva,
+        total: ticket.total,
+        estado: pedido.estado || "actual",
+        etapa: pedido.etapa || 0,
+        codigo_entrega: pedido.codigo_entrega || codigoEntrega,
+      });
 
-setPedidos((prev) => [nuevoPedido, ...prev]);
-
+      setPedidos((prev) => [pedidoPantalla, ...prev.filter((p) => p.id !== pedidoPantalla.id)]);
       setUltimoTicket(ticket);
       setCarrito([]);
       setVista("ticket");
       mostrarToast("Compra confirmada. Ticket generado correctamente");
       await cargarDatos();
+      await cargarPedidos();
     } catch (error) {
       mostrarToast(error.message || "No se pudo completar la compra");
     }
@@ -1098,6 +1171,7 @@ setPedidos((prev) => [nuevoPedido, ...prev]);
     navegar={navegar}
     usuario={usuario}
     mostrarToast={mostrarToast}
+    recargarPedidos={cargarPedidos}
   />
 )}
         {vista === "ticket" && <TicketPage ticket={ultimoTicket} navegar={navegar} mostrarToast={mostrarToast} />}
@@ -1980,7 +2054,7 @@ function Carrito({ carrito, setCarrito, confirmarCompra, usuario, navegar }) {
   );
 }
 
-function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast }) {
+function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast, recargarPedidos }) {
   const [pestana, setPestana] = useState("actuales");
   const [codigosIngresados, setCodigosIngresados] = useState({});
 
@@ -2004,30 +2078,52 @@ function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast }) {
       ? pedidosEntregados
       : pedidos;
 
-  const avanzarSeguimiento = (id) => {
-    if (!esAdmin) return;
+  const guardarEstadoPedido = async (pedido, cambios) => {
+    const idPedido = pedido.id_pedido || pedido.id;
 
-    setPedidos((prev) =>
-      prev.map((pedido) => {
-        if (pedido.id !== id) return pedido;
-
-        const etapaActual = Number(pedido.etapa || 0);
-
-        if (etapaActual >= 2) {
-          mostrarToast?.("Para entregar el pedido necesitas validar el código del cliente");
-          return pedido;
-        }
-
-        return {
-          ...pedido,
-          etapa: etapaActual + 1,
-          estado: "actual",
-        };
-      })
-    );
+    await apiFetch(`/pedidos/${idPedido}/estado`, {
+      method: "PATCH",
+      body: JSON.stringify(cambios),
+    });
   };
 
-  const confirmarEntregaConCodigo = (id) => {
+  const avanzarSeguimiento = async (id) => {
+    if (!esAdmin) return;
+
+    const pedido = pedidos.find((p) => p.id === id);
+    if (!pedido) return;
+
+    const etapaActual = Number(pedido.etapa || 0);
+
+    if (etapaActual >= 2) {
+      mostrarToast?.("Para entregar el pedido necesitas validar el código del cliente");
+      return;
+    }
+
+    const actualizado = {
+      ...pedido,
+      etapa: etapaActual + 1,
+      estado: "actual",
+    };
+
+    setPedidos((prev) => prev.map((p) => (p.id === id ? actualizado : p)));
+
+    try {
+      await guardarEstadoPedido(pedido, {
+        estado: actualizado.estado,
+        etapa: actualizado.etapa,
+      });
+
+      await recargarPedidos?.();
+      mostrarToast?.("Seguimiento actualizado correctamente");
+    } catch (error) {
+      console.error(error);
+      mostrarToast?.(error.message || "No se pudo guardar el seguimiento en la BD");
+      await recargarPedidos?.();
+    }
+  };
+
+  const confirmarEntregaConCodigo = async (id) => {
     if (!esAdmin) return;
 
     const pedido = pedidos.find((p) => p.id === id);
@@ -2045,30 +2141,45 @@ function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast }) {
       return;
     }
 
-    setPedidos((prev) =>
-      prev.map((p) =>
-        p.id === id
-          ? {
-              ...p,
-              etapa: 3,
-              estado: "entregado",
-              fechaEntregado: fechaTicket(),
-            }
-          : p
-      )
-    );
+    const actualizado = {
+      ...pedido,
+      etapa: 3,
+      estado: "entregado",
+      fechaEntregado: fechaTicket(),
+    };
+
+    setPedidos((prev) => prev.map((p) => (p.id === id ? actualizado : p)));
+
+    try {
+      await guardarEstadoPedido(pedido, {
+        estado: "entregado",
+        etapa: 3,
+        fecha_entregado: new Date().toISOString(),
+      });
+
+      await recargarPedidos?.();
+      mostrarToast?.("Pedido marcado como entregado correctamente");
+    } catch (error) {
+      console.error(error);
+      mostrarToast?.(error.message || "No se pudo marcar como entregado en la BD");
+      await recargarPedidos?.();
+    }
 
     setCodigosIngresados((prev) => ({
       ...prev,
       [id]: "",
     }));
-
-    mostrarToast?.("Pedido marcado como entregado correctamente");
   };
 
   return (
     <section className="screen">
       <h1 className="section-title">Mis pedidos</h1>
+
+      <div className="cart-top-actions">
+        <button className="green-btn" onClick={() => recargarPedidos?.()}>
+          🔄 Actualizar pedidos
+        </button>
+      </div>
 
       <div className="orders-tabs">
         <button
@@ -2729,8 +2840,9 @@ function Admin({
           mostrarToast("Usuario eliminado correctamente");
           await recargarUsuarios();
         } catch (error) {
-          setUsuarios((prev) => prev.filter((u) => u.id_usuario !== id));
-          mostrarToast(error.message || "Usuario eliminado en pantalla");
+          console.error(error);
+          mostrarToast(error.message || "No se pudo eliminar porque el usuario tiene pedidos, comentarios u otros datos relacionados");
+          await recargarUsuarios();
         }
       },
     });
