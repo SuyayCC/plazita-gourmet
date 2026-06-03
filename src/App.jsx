@@ -260,7 +260,7 @@ function mapPedidoApi(p) {
     subtotal: Number(p.subtotal || 0),
     iva: Number(p.iva || 0),
     total: Number(p.total || 0),
-    estado: String(p.estado || "actual").toLowerCase() === "entregado" ? "entregado" : "actual",
+    estado: String(p.estado || "pendiente").toLowerCase() === "entregado" ? "entregado" : "pendiente",
     etapa: Number(p.etapa || p.etapa_seguimiento || 0),
     codigoEntrega: p.codigoEntrega || p.codigo_entrega || p.codigo || "",
     fechaEntregado: p.fechaEntregado || p.fecha_entregado || null,
@@ -1060,7 +1060,7 @@ const categoriaServicios = {
         subtotal: ticket.subtotal,
         iva: ticket.iva,
         total: ticket.total,
-        estado: pedido.estado || "actual",
+        estado: pedido.estado || "pendiente",
         etapa: pedido.etapa || 0,
         codigo_entrega: pedido.codigo_entrega || codigoEntrega,
       });
@@ -2103,7 +2103,7 @@ function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast, recargar
     const actualizado = {
       ...pedido,
       etapa: etapaActual + 1,
-      estado: "actual",
+      estado: "pendiente",
     };
 
     setPedidos((prev) => prev.map((p) => (p.id === id ? actualizado : p)));
