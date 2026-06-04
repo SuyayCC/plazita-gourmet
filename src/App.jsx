@@ -136,7 +136,15 @@ function mapPromocionApi(pr) {
 }
 
 function fechaInput(fecha = new Date()) {
-  return fecha.toISOString().slice(0, 10);
+  const f = fecha instanceof Date ? fecha : new Date(fecha);
+
+  if (Number.isNaN(f.getTime())) return "";
+
+  const yyyy = f.getFullYear();
+  const mm = String(f.getMonth() + 1).padStart(2, "0");
+  const dd = String(f.getDate()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function promocionActiva(pr) {
@@ -164,7 +172,11 @@ function precioConDescuento(precio, descuento) {
 }
 
 function aplicarPromocionesAProductos(productos, promociones) {
-  const promocionesActivas = promociones.filter(promocionActiva);
+  const promocionesActivas = promociones
+    .filter(promocionActiva)
+    .sort((a, b) => Number(a.id_promocion || 0) - Number(b.id_promocion || 0));
+
+  // Si se crean varias promociones para el mismo producto, se usa la más reciente.
   const promosPorTitulo = new Map(promocionesActivas.map((pr) => [normalizar(pr.titulo), pr]));
 
   return productos.map((p) => {
@@ -2813,48 +2825,54 @@ function Admin({
       return;
     }
 
+    // La promoción dura solo el día en que se crea.
+    // Mañana ya no será activa y el producto volverá a su precio normal.
     const fechaInicio = fechaInput();
-    const fechaFinDefault = fechaInput(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
-    const fechaFinTexto = window.prompt("Fecha final de la promoción (YYYY-MM-DD)", fechaFinDefault);
-
-    if (fechaFinTexto === null) return;
-
-    const fechaFin = fechaFinTexto.trim();
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaFin)) {
-      mostrarToast("La fecha debe ir así: 2026-06-30");
-      return;
-    }
-
-    const fechaValida = new Date(`${fechaFin}T00:00:00`);
-
-    if (Number.isNaN(fechaValida.getTime()) || fechaValida.toISOString().slice(0, 10) !== fechaFin) {
-      mostrarToast("Esa fecha no existe. Usa una fecha válida");
-      return;
-    }
-
+    const fechaFin = fechaInicio;
     const imagenPromo = imagenParaPromocion(p);
 
+    const payloadPromo = {
+      id_usuario: usuario?.id_usuario || 1,
+      titulo: p.nombre,
+      tipo: "porcentaje",
+      descuento,
+      fecha_inicio: fechaInicio,
+      fecha_fin: fechaFin,
+      estado: true,
+      imagen_base64: imagenPromo.base64,
+      imagen_mime: imagenPromo.mime,
+    };
+
     try {
-      await apiFetch("/promociones", {
+      const promoGuardada = await apiFetch("/promociones", {
         method: "POST",
-        body: JSON.stringify({
-          id_usuario: usuario?.id_usuario || 1,
-          titulo: p.nombre,
-          tipo: "porcentaje",
-          descuento,
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin || fechaFinDefault,
-          estado: true,
-          imagen_base64: imagenPromo.base64,
-          imagen_mime: imagenPromo.mime,
-        }),
+        body: JSON.stringify(payloadPromo),
       });
 
-      mostrarToast(`Promoción guardada: ${descuento}% de descuento`);
+      const promoRespuesta = promoGuardada?.promocion || promoGuardada;
+
+      const promoLocal = mapPromocionApi({
+        ...payloadPromo,
+        ...(promoRespuesta || {}),
+        id_promocion: promoRespuesta?.id_promocion || promoRespuesta?.id || Date.now(),
+      });
+
+      setProductos((prev) =>
+        prev.map((item) =>
+          item.id_producto === p.id_producto
+            ? {
+                ...item,
+                descuento: precioConDescuento(item.precio, descuento),
+                promocion: promoLocal,
+              }
+            : item
+        )
+      );
+
+      mostrarToast(`Promoción guardada por hoy: ${descuento}% de descuento`);
       await recargarProductos();
     } catch (error) {
-      mostrarToast(error.message || "No se pudo guardar la promoción en la BD");
+      mostrarToast(error.message || "No se pudo guardar la promoción en la BD. Revisa POST /promociones en server.cjs");
     }
   };
 
@@ -3407,3 +3425,4 @@ function Admin({
     </section>
   );
 }
+
