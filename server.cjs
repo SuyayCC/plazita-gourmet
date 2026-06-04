@@ -1124,6 +1124,7 @@ app.get("/api/promociones", async (_req, res) => {
         fecha_inicio,
         fecha_fin,
         estado,
+        id_promocion AS fecha_creacion,
         CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
         imagen_mime
       FROM promocion
@@ -1137,28 +1138,63 @@ app.get("/api/promociones", async (_req, res) => {
 });
 
 app.post("/api/promociones", async (req, res) => {
+  const client = await pool.connect();
+
   try {
     const id_usuario = Number(req.body.id_usuario || 1);
     const titulo = String(req.body.titulo || "").trim();
-    const tipo = String(req.body.tipo || "porcentaje").trim();
-    const descuento = Number(req.body.descuento || 0);
+    const tipo = String(req.body.tipo || "porcentaje").trim().toLowerCase();
+    const descuento = Number(req.body.descuento);
     const fecha_inicio = req.body.fecha_inicio || new Date().toISOString().slice(0, 10);
-    const fecha_fin = req.body.fecha_fin || null;
+    const fecha_fin = req.body.fecha_fin || fecha_inicio;
+    const imagenBuffer = req.body.imagen_base64 ? Buffer.from(req.body.imagen_base64, "base64") : null;
+    const imagen_mime = req.body.imagen_mime || null;
 
-    if (!id_usuario || !titulo || !descuento) {
+    if (!id_usuario || !titulo) {
       return res.status(400).json({ message: "Faltan datos para registrar la promoción" });
     }
 
-    if (!Number.isFinite(descuento) || descuento <= 0 || descuento >= 100) {
-      return res.status(400).json({ message: "El descuento debe estar entre 1 y 99" });
+    if (!Number.isFinite(descuento) || !Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
+      return res.status(400).json({ message: "El descuento debe ser un número entero del 0 al 15" });
     }
 
-    const { rows } = await pool.query(
+    if (tipo !== "porcentaje") {
+      return res.status(400).json({ message: "El tipo de descuento debe ser porcentaje" });
+    }
+
+    await client.query("BEGIN");
+
+    // Apaga promociones anteriores del mismo producto para que al recargar no regrese un descuento viejo.
+    await client.query(
+      `
+      UPDATE promocion
+      SET estado = false,
+          fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
+      WHERE LOWER(TRIM(titulo)) = LOWER(TRIM($1));
+      `,
+      [titulo]
+    );
+
+    // Si el admin pone 0%, solo se quita la promoción y no se inserta una nueva.
+    if (descuento === 0) {
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        quitada: true,
+        titulo,
+        descuento: 0,
+        estado: false,
+        message: "Promoción quitada correctamente",
+      });
+    }
+
+    const { rows } = await client.query(
       `
       INSERT INTO promocion
         (id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, estado, imagen, imagen_mime)
       VALUES
-        ($1, $2, $3, $4, $5, $6, $7, NULL, NULL)
+        ($1, $2, $3, $4, $5, $6, true, $7, $8)
       RETURNING
         id_promocion,
         id_usuario,
@@ -1168,15 +1204,127 @@ app.post("/api/promociones", async (req, res) => {
         fecha_inicio,
         fecha_fin,
         estado,
+        id_promocion AS fecha_creacion,
         CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
         imagen_mime;
       `,
-      [id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, true]
+      [id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, imagenBuffer, imagen_mime]
     );
 
+    await client.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (error) {
+    await client.query("ROLLBACK");
     manejarError(res, error, "No se pudo guardar la promoción");
+  } finally {
+    client.release();
+  }
+});
+
+async function actualizarPromocionPorId(req, res) {
+  try {
+    const id = Number(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({ message: "ID de promoción no válido" });
+    }
+
+    const campos = [];
+    const valores = [];
+
+    if (req.body.estado !== undefined) {
+      valores.push(req.body.estado === true || req.body.estado === "true" || req.body.estado === 1 || req.body.estado === "1");
+      campos.push(`estado = $${valores.length}`);
+    }
+
+    if (req.body.fecha_inicio !== undefined) {
+      valores.push(req.body.fecha_inicio || null);
+      campos.push(`fecha_inicio = $${valores.length}`);
+    }
+
+    if (req.body.fecha_fin !== undefined) {
+      valores.push(req.body.fecha_fin || null);
+      campos.push(`fecha_fin = $${valores.length}`);
+    }
+
+    if (req.body.descuento !== undefined) {
+      const descuento = Number(req.body.descuento);
+
+      if (!Number.isFinite(descuento) || !Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
+        return res.status(400).json({ message: "El descuento debe ser un número entero del 0 al 15" });
+      }
+
+      valores.push(descuento);
+      campos.push(`descuento = $${valores.length}`);
+
+      if (descuento === 0 && req.body.estado === undefined) {
+        valores.push(false);
+        campos.push(`estado = $${valores.length}`);
+      }
+    }
+
+    if (!campos.length) {
+      return res.status(400).json({ message: "No hay datos para actualizar la promoción" });
+    }
+
+    valores.push(id);
+
+    const { rows } = await pool.query(
+      `
+      UPDATE promocion
+      SET ${campos.join(", ")}
+      WHERE id_promocion = $${valores.length}
+      RETURNING
+        id_promocion,
+        id_usuario,
+        titulo,
+        tipo,
+        descuento,
+        fecha_inicio,
+        fecha_fin,
+        estado,
+        id_promocion AS fecha_creacion,
+        CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
+        imagen_mime;
+      `,
+      valores
+    );
+
+    if (!rows.length) return res.status(404).json({ message: "Promoción no encontrada" });
+
+    res.json(rows[0]);
+  } catch (error) {
+    manejarError(res, error, "No se pudo actualizar la promoción");
+  }
+}
+
+app.patch("/api/promociones/:id", actualizarPromocionPorId);
+app.put("/api/promociones/:id", actualizarPromocionPorId);
+
+app.delete("/api/promociones/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({ message: "ID de promoción no válido" });
+    }
+
+    const { rows } = await pool.query(
+      `
+      UPDATE promocion
+      SET estado = false,
+          fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
+      WHERE id_promocion = $1
+      RETURNING id_promocion, titulo, descuento, estado, fecha_fin;
+      `,
+      [id]
+    );
+
+    if (!rows.length) return res.status(404).json({ message: "Promoción no encontrada" });
+
+    res.json({ ok: true, promocion: rows[0] });
+  } catch (error) {
+    manejarError(res, error, "No se pudo eliminar/desactivar la promoción");
   }
 });
 
