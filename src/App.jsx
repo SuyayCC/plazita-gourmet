@@ -141,6 +141,11 @@ function fechaInput(fecha = new Date()) {
   return fecha.toISOString().slice(0, 10);
 }
 
+function fechaFinPromocionDosDias() {
+  // Dura 2 días calendario: hoy y mañana.
+  return fechaInput(new Date(Date.now() + 24 * 60 * 60 * 1000));
+}
+
 function promocionActiva(pr) {
   if (!pr || pr.estado === false) return false;
 
@@ -2872,7 +2877,7 @@ function Admin({
       const idProductoPromo = productoGuardado?.id_producto || idEditando;
 
       // Siempre mandamos el porcentaje al servidor.
-      // 0 = quitar promoción. 1 a 15 = guardar promoción activa de hoy.
+      // 0 = quitar promoción. 1 a 15 = guardar promoción activa por 2 días.
       // id_producto hace que funcione para TODOS los productos, no solo por nombre.
       await apiFetch("/promociones", {
         method: "POST",
@@ -2883,7 +2888,7 @@ function Admin({
           tipo: "porcentaje",
           descuento: descuentoPorcentaje,
           fecha_inicio: fechaInput(),
-          fecha_fin: fechaInput(),
+          fecha_fin: fechaFinPromocionDosDias(),
           estado: descuentoPorcentaje > 0,
           imagen_base64: imagenData?.base64 || null,
           imagen_mime: imagenData?.mime || null,
@@ -2967,10 +2972,10 @@ function Admin({
       return;
     }
 
-    // Promoción de un solo día: inicia hoy y termina hoy.
+    // Promoción de 2 días: inicia hoy y termina mañana.
     // 0 = quitar promoción; 1 a 15 = guardar promoción activa.
     const fechaInicio = fechaInput();
-    const fechaFin = fechaInput();
+    const fechaFin = fechaFinPromocionDosDias();
     const imagenPromo = imagenParaPromocion(p);
 
     try {
@@ -2993,7 +2998,7 @@ function Admin({
       mostrarToast(
         descuento === 0
           ? "Promoción quitada. El producto vuelve a precio normal"
-          : `Promoción guardada por hoy: ${descuento}% de descuento`
+          : `Promoción guardada por 2 días: ${descuento}% de descuento`
       );
 
       // Recargamos desde BD. Así admin y cliente ven lo mismo.
@@ -3562,4 +3567,3 @@ function Admin({
     </section>
   );
 }
-
