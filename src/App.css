@@ -877,3 +877,51 @@ textarea {
   }
 }
 
+/* ===== Buscador por fecha en pedidos de administrador ===== */
+.orders-date-search {
+  max-width: 720px;
+  margin: 24px auto 28px;
+  padding: 20px 24px;
+  border: 2px solid #f5cfe0;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.06);
+}
+
+.orders-date-search label {
+  display: block;
+  margin-bottom: 12px;
+  font-weight: 800;
+  font-size: 18px;
+  color: #373c75;
+}
+
+.orders-date-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.orders-date-row input[type="date"] {
+  flex: 1;
+  min-width: 220px;
+  padding: 15px 18px;
+  border: 2px solid #ececec;
+  border-radius: 16px;
+  font-size: 17px;
+  outline: none;
+  background: #fff;
+}
+
+.orders-date-row input[type="date"]:focus {
+  border-color: #d13b82;
+  box-shadow: 0 0 0 3px rgba(209, 59, 130, 0.12);
+}
+
+.orders-date-search small {
+  display: block;
+  margin-top: 10px;
+  color: #5b8c3b;
+  font-weight: 700;
+}
