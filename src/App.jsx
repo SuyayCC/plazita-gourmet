@@ -2729,6 +2729,60 @@ function Admin({
     }
   };
 
+  const desactivarPromocionesProducto = async (nombreProducto) => {
+    const nombreNormalizado = normalizar(nombreProducto);
+    const ayer = fechaInput(new Date(Date.now() - 24 * 60 * 60 * 1000));
+
+    const promocionesDelProducto = promocionesTabla.filter(
+      (pr) => normalizar(pr.titulo) === nombreNormalizado && pr.id_promocion
+    );
+
+    const ids = [...new Set(promocionesDelProducto.map((pr) => pr.id_promocion).filter(Boolean))];
+
+    if (ids.length === 0) {
+      // No detenemos el guardado: tal vez el producto no tenía promoción guardada
+      // o el servidor todavía no regresó el id de promoción.
+      return true;
+    }
+
+    await Promise.all(
+      ids.map(async (id) => {
+        const intentos = [
+          () =>
+            apiFetch(`/promociones/${id}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                estado: false,
+                fecha_fin: ayer,
+              }),
+            }),
+          () =>
+            apiFetch(`/promociones/${id}`, {
+              method: "PUT",
+              body: JSON.stringify({
+                estado: false,
+                fecha_fin: ayer,
+              }),
+            }),
+          () => apiFetch(`/promociones/${id}`, { method: "DELETE" }),
+        ];
+
+        for (const intento of intentos) {
+          try {
+            await intento();
+            return true;
+          } catch {
+            // Probamos el siguiente método por compatibilidad con distintos server.cjs.
+          }
+        }
+
+        return false;
+      })
+    );
+
+    return true;
+  };
+
   const guardar = async () => {
     const idEditando = editando;
     const codigo = form.codigo_producto.trim().toUpperCase();
@@ -2791,7 +2845,7 @@ function Admin({
       }
 
 
-      if (editando || descuentoPorcentaje > 0) {
+      if (descuentoPorcentaje > 0) {
         await apiFetch("/promociones", {
           method: "POST",
           body: JSON.stringify({
@@ -2806,6 +2860,8 @@ function Admin({
             imagen_mime: imagenData?.mime || null,
           }),
         });
+      } else {
+        await desactivarPromocionesProducto(form.nombre.trim());
       }
 
       if (descuentoPorcentaje === 0) {
@@ -2927,26 +2983,31 @@ function Admin({
     }
 
     // Promoción de un solo día: inicia hoy y termina hoy.
-    // Si el descuento es 0, se guarda como reemplazo para quitar la promoción activa.
+    // Si el descuento es 0, NO mandamos POST con 0 porque el backend lo toma como dato vacío.
+    // En su lugar desactivamos/eliminamos las promociones anteriores del producto.
     const fechaInicio = fechaInput();
     const fechaFin = fechaInput();
     const imagenPromo = imagenParaPromocion(p);
 
     try {
-      await apiFetch("/promociones", {
-        method: "POST",
-        body: JSON.stringify({
-          id_usuario: usuario?.id_usuario || 1,
-          titulo: p.nombre,
-          tipo: "porcentaje",
-          descuento,
-          fecha_inicio: fechaInicio,
-          fecha_fin: fechaFin,
-          estado: true,
-          imagen_base64: imagenPromo.base64,
-          imagen_mime: imagenPromo.mime,
-        }),
-      });
+      if (descuento > 0) {
+        await apiFetch("/promociones", {
+          method: "POST",
+          body: JSON.stringify({
+            id_usuario: usuario?.id_usuario || 1,
+            titulo: p.nombre,
+            tipo: "porcentaje",
+            descuento,
+            fecha_inicio: fechaInicio,
+            fecha_fin: fechaFin,
+            estado: true,
+            imagen_base64: imagenPromo.base64,
+            imagen_mime: imagenPromo.mime,
+          }),
+        });
+      } else {
+        await desactivarPromocionesProducto(p.nombre);
+      }
 
       mostrarToast(
         descuento === 0
