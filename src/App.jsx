@@ -2733,6 +2733,13 @@ function Admin({
       return;
     }
 
+    const descuentoPorcentaje = form.descuento === "" ? null : Number(form.descuento);
+
+    if (form.descuento !== "" && (!Number.isInteger(descuentoPorcentaje) || descuentoPorcentaje < 1 || descuentoPorcentaje > 15)) {
+      mostrarToast("El descuento debe ser un porcentaje entero del 1 al 15");
+      return;
+    }
+
     const payload = {
       codigo_producto: codigo,
       id_categoria: Number(form.id_categoria),
@@ -2762,6 +2769,24 @@ function Admin({
           body: JSON.stringify(payload),
         });
         mostrarToast("Producto agregado correctamente");
+      }
+
+
+      if (descuentoPorcentaje) {
+        await apiFetch("/promociones", {
+          method: "POST",
+          body: JSON.stringify({
+            id_usuario: usuario?.id_usuario || 1,
+            titulo: form.nombre.trim(),
+            tipo: "porcentaje",
+            descuento: descuentoPorcentaje,
+            fecha_inicio: fechaInput(),
+            fecha_fin: fechaInput(),
+            estado: true,
+            imagen_base64: imagenData?.base64 || null,
+            imagen_mime: imagenData?.mime || null,
+          }),
+        });
       }
 
       limpiar();
@@ -3122,21 +3147,24 @@ function Admin({
 
               <label className="admin-field">
                 <span>Descuento (%)</span>
-                <input
-                  placeholder="Del 1 al 15"
-                  type="number"
-                  min="1"
-                  max="15"
-                  step="1"
-                  inputMode="numeric"
-                  value={form.descuento}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      descuento: limitarDescuentoPorcentaje(e.target.value),
-                    })
-                  }
-                />
+                <div className="percent-field">
+                  <input
+                    placeholder="1 a 15"
+                    type="number"
+                    min="1"
+                    max="15"
+                    step="1"
+                    inputMode="numeric"
+                    value={form.descuento}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        descuento: limitarDescuentoPorcentaje(e.target.value),
+                      })
+                    }
+                  />
+                  <b>%</b>
+                </div>
               </label>
             </div>
 
@@ -3419,4 +3447,3 @@ function Admin({
     </section>
   );
 }
-
