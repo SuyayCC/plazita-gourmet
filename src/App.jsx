@@ -1462,7 +1462,7 @@ function ProductCard({ p, abrirProducto, agregarCarrito, usuario }) {
       <p className={p.descuento ? "old-price" : "price"}>{money(p.precio)}</p>
       {p.descuento ? <p className="price">{money(p.descuento)}</p> : null}
       {p.promocion?.descuento ? <p className="promo">-{Number(p.promocion.descuento).toFixed(0)}% de descuento</p> : null}
-      <small>Stock: {p.stock || 0} · Vendidos: {p.vendidos || 0} · Buscado: {p.busquedas || 0}</small>
+      <small>Stock: {p.stock || 0} · Vendidos: {p.vendidos || 0}</small>
 
       <div className="product-actions">
         <button onClick={() => abrirProducto(p)}>Ver</button>
@@ -1495,7 +1495,6 @@ function Detalle({ producto, agregarCarrito, setVideo, usuario }) {
           <p><b>Descuento:</b> {producto.descuento ? `${money(producto.descuento)}${producto.promocion?.descuento ? ` (-${Number(producto.promocion.descuento).toFixed(0)}%)` : ""}` : "Ninguno"}</p>
           <p><b>Stock:</b> {producto.stock} unidades</p>
           <p><b>Vendidos:</b> {producto.vendidos || 0}</p>
-          <p><b>Búsquedas:</b> {producto.busquedas || 0}</p>
           <p className="story-detail"><b>Historia:</b> {producto.historia}</p>
 
           <button className="video-link" onClick={() => setVideo(true)}>Ver video</button>
@@ -2627,7 +2626,6 @@ function Admin({
   const totalClientes = usuarios.filter((u) => u.rol === "cliente").length;
   const totalAdmins = usuarios.filter((u) => u.rol === "admin").length;
   const masVendidos = [...productos].sort((a, b) => (b.vendidos || 0) - (a.vendidos || 0)).slice(0, 5);
-  const masBuscados = [...productos].sort((a, b) => (b.busquedas || 0) - (a.busquedas || 0)).slice(0, 5);
 
   const codigoProductoValido = (codigo) => /^[A-Z]{2,5}-[0-9]{4,12}$/.test(String(codigo || "").trim().toUpperCase());
 
@@ -3213,7 +3211,7 @@ function Admin({
                         </span>
                       ) : null}
                     </p>
-                    <p>Vendidos: {p.vendidos || 0} · Búsquedas: {p.busquedas || 0}</p>
+                    <p>Vendidos: {p.vendidos || 0}</p>
                   </div>
 
                   <div className="admin-actions">
@@ -3294,24 +3292,6 @@ function Admin({
             )}
           </div>
 
-          <div className="admin-table">
-            <h2>Top 5 productos más buscados</h2>
-
-            {masBuscados.length === 0 ? (
-              <p className="empty">Aún no hay estadísticas de búsquedas.</p>
-            ) : (
-              masBuscados.map((p, i) => (
-                <div className="admin-row" key={p.id}>
-                  <img src={p.imagen} alt={p.nombre} />
-                  <div>
-                    <h3>#{i + 1} {p.nombre}</h3>
-                    {p.codigo_producto && <p>ID: {p.codigo_producto}</p>}
-                    <p>Búsquedas: <b>{p.busquedas || 0}</b></p>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
         </div>
       )}
 
