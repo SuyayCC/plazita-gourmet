@@ -169,7 +169,9 @@ function aplicarPromocionesAProductos(productos, promociones) {
 
   const valorOrdenPromo = (pr) => {
     const id = Number(pr.id_promocion || pr.id || 0);
-    const fecha = Date.parse(pr.fecha_creacion || pr.updated_at || pr.created_at || pr.fecha_inicio || pr.fecha || "") || 0;
+    const fecha =
+      Date.parse(pr.fecha_creacion || pr.created_at || pr.updated_at || pr.fecha_registro || pr.fecha_inicio || pr.fecha || "") || 0;
+
     return fecha * 100000 + id;
   };
 
@@ -179,9 +181,9 @@ function aplicarPromocionesAProductos(productos, promociones) {
     const clave = normalizar(pr.titulo);
     const actual = promosPorTitulo.get(clave);
 
-    // Si existen varias promociones del mismo producto, usamos la más reciente.
-    // Esto permite cambiar de 10% a 5% y también usar 0% para quitar la promo.
-    if (!actual || valorOrdenPromo(pr) >= valorOrdenPromo(actual)) {
+    // Si hay varias promociones del mismo producto, gana la más nueva.
+    // Esto corrige el caso donde guardas 5%/15% pero al recargar vuelve el 10% viejo.
+    if (!actual || valorOrdenPromo(pr) > valorOrdenPromo(actual)) {
       promosPorTitulo.set(clave, pr);
     }
   });
@@ -190,7 +192,6 @@ function aplicarPromocionesAProductos(productos, promociones) {
     const promo = promosPorTitulo.get(normalizar(p.nombre));
     const porcentaje = Number(promo?.descuento || 0);
 
-    // Si no hay promoción o la última promoción es 0%, el producto vuelve a precio normal.
     if (!promo || porcentaje <= 0) {
       return {
         ...p,
@@ -2846,6 +2847,10 @@ function Admin({
 
 
       if (descuentoPorcentaje > 0) {
+        // Primero apagamos promociones anteriores del mismo producto.
+        // Así al recargar no vuelve el 10% viejo ni se mezclan descuentos.
+        await desactivarPromocionesProducto(form.nombre.trim()).catch(() => null);
+
         await apiFetch("/promociones", {
           method: "POST",
           body: JSON.stringify({
@@ -2991,6 +2996,9 @@ function Admin({
 
     try {
       if (descuento > 0) {
+        // Apagamos cualquier promoción anterior antes de guardar la nueva.
+        await desactivarPromocionesProducto(p.nombre).catch(() => null);
+
         await apiFetch("/promociones", {
           method: "POST",
           body: JSON.stringify({
@@ -3604,3 +3612,4 @@ function Admin({
     </section>
   );
 }
+
