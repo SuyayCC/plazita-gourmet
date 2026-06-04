@@ -44,6 +44,14 @@ app.use(
 app.use(express.json({ limit: "25mb" }));
 app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 
+// Evita que admin y cliente vean datos viejos por caché.
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
 const pool = new Pool(
   process.env.DATABASE_URL
     ? {
@@ -124,6 +132,10 @@ async function inicializarBaseDatos() {
       await pool.query(`ALTER TABLE pedido ADD COLUMN IF NOT EXISTS fecha_entregado TIMESTAMP NULL;`);
       await pool.query(`UPDATE pedido SET etapa = 0 WHERE etapa IS NULL;`);
       await pool.query(`UPDATE pedido SET codigo_entrega = LPAD((FLOOR(RANDOM() * 9000) + 1000)::TEXT, 4, '0') WHERE codigo_entrega IS NULL OR codigo_entrega = '';`);
+    }
+
+    if (await existeTabla("promocion")) {
+      await pool.query(`ALTER TABLE promocion ADD COLUMN IF NOT EXISTS id_producto INTEGER NULL;`);
     }
 
     console.log("Base de datos verificada correctamente");
@@ -839,11 +851,13 @@ app.post("/api/comprar", async (req, res) => {
           COALESCE((
             SELECT pr.descuento
             FROM promocion pr
-            WHERE LOWER(pr.titulo) = LOWER(p.nombre)
+            WHERE (pr.id_producto = p.id_producto OR LOWER(TRIM(pr.titulo)) = LOWER(TRIM(p.nombre)))
               AND pr.estado::text IN ('true', 'activo', '1')
               AND (pr.fecha_inicio IS NULL OR pr.fecha_inicio <= CURRENT_DATE)
               AND (pr.fecha_fin IS NULL OR pr.fecha_fin >= CURRENT_DATE)
-            ORDER BY pr.id_promocion DESC
+            ORDER BY
+              CASE WHEN pr.id_producto = p.id_producto THEN 0 ELSE 1 END,
+              pr.id_promocion DESC
             LIMIT 1
           ), 0) AS descuento_promocion
         FROM producto p
@@ -1114,10 +1128,13 @@ app.post("/api/testimonios", async (req, res) => {
 
 app.get("/api/promociones", async (_req, res) => {
   try {
+    // Una sola promoción activa por producto. Si id_producto existe, se usa como llave real.
+    // Si hay registros viejos sin id_producto, se usa el nombre como respaldo.
     const { rows } = await pool.query(`
-      SELECT
+      SELECT DISTINCT ON (COALESCE(id_producto::text, 'titulo:' || LOWER(TRIM(titulo))))
         id_promocion,
         id_usuario,
+        id_producto,
         titulo,
         tipo,
         descuento,
@@ -1128,7 +1145,11 @@ app.get("/api/promociones", async (_req, res) => {
         CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
         imagen_mime
       FROM promocion
-      ORDER BY id_promocion DESC;
+      WHERE estado::text IN ('true', 'activo', '1')
+        AND COALESCE(descuento, 0) > 0
+        AND (fecha_inicio IS NULL OR fecha_inicio <= CURRENT_DATE)
+        AND (fecha_fin IS NULL OR fecha_fin >= CURRENT_DATE)
+      ORDER BY COALESCE(id_producto::text, 'titulo:' || LOWER(TRIM(titulo))), id_promocion DESC;
     `);
 
     res.json(rows);
@@ -1142,6 +1163,9 @@ app.post("/api/promociones", async (req, res) => {
 
   try {
     const id_usuario = Number(req.body.id_usuario || 1);
+    const id_producto = req.body.id_producto === undefined || req.body.id_producto === null || req.body.id_producto === ""
+      ? null
+      : Number(req.body.id_producto);
     const titulo = String(req.body.titulo || "").trim();
     const tipo = String(req.body.tipo || "porcentaje").trim().toLowerCase();
     const descuento = Number(req.body.descuento);
@@ -1150,38 +1174,55 @@ app.post("/api/promociones", async (req, res) => {
     const imagenBuffer = req.body.imagen_base64 ? Buffer.from(req.body.imagen_base64, "base64") : null;
     const imagen_mime = req.body.imagen_mime || null;
 
-    if (!id_usuario || !titulo) {
+    if (!id_usuario || (!id_producto && !titulo)) {
       return res.status(400).json({ message: "Faltan datos para registrar la promoción" });
     }
 
-    if (!Number.isFinite(descuento) || !Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
-      return res.status(400).json({ message: "El descuento debe ser un número entero del 0 al 15" });
+    if (id_producto !== null && (!Number.isInteger(id_producto) || id_producto <= 0)) {
+      return res.status(400).json({ message: "Producto no válido para la promoción" });
     }
 
     if (tipo !== "porcentaje") {
       return res.status(400).json({ message: "El tipo de descuento debe ser porcentaje" });
     }
 
+    if (!Number.isFinite(descuento) || !Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
+      return res.status(400).json({ message: "El descuento debe ser un número entero del 0 al 15" });
+    }
+
     await client.query("BEGIN");
 
-    // Apaga promociones anteriores del mismo producto para que al recargar no regrese un descuento viejo.
-    await client.query(
-      `
-      UPDATE promocion
-      SET estado = false,
-          fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
-      WHERE LOWER(TRIM(titulo)) = LOWER(TRIM($1));
-      `,
-      [titulo]
-    );
+    // Apagamos promociones viejas del mismo producto. Sirve para TODOS los productos.
+    if (id_producto) {
+      await client.query(
+        `
+        UPDATE promocion
+        SET estado = false,
+            fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
+        WHERE id_producto = $1
+           OR LOWER(TRIM(titulo)) = LOWER(TRIM($2));
+        `,
+        [id_producto, titulo]
+      );
+    } else {
+      await client.query(
+        `
+        UPDATE promocion
+        SET estado = false,
+            fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
+        WHERE LOWER(TRIM(titulo)) = LOWER(TRIM($1));
+        `,
+        [titulo]
+      );
+    }
 
-    // Si el admin pone 0%, solo se quita la promoción y no se inserta una nueva.
+    // 0% = quitar descuento. No guardamos promoción de 0.
     if (descuento === 0) {
       await client.query("COMMIT");
-
       return res.json({
         ok: true,
         quitada: true,
+        id_producto,
         titulo,
         descuento: 0,
         estado: false,
@@ -1192,12 +1233,13 @@ app.post("/api/promociones", async (req, res) => {
     const { rows } = await client.query(
       `
       INSERT INTO promocion
-        (id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, estado, imagen, imagen_mime)
+        (id_usuario, id_producto, titulo, tipo, descuento, fecha_inicio, fecha_fin, estado, imagen, imagen_mime)
       VALUES
-        ($1, $2, $3, $4, $5, $6, true, $7, $8)
+        ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)
       RETURNING
         id_promocion,
         id_usuario,
+        id_producto,
         titulo,
         tipo,
         descuento,
@@ -1208,7 +1250,7 @@ app.post("/api/promociones", async (req, res) => {
         CASE WHEN imagen IS NOT NULL THEN encode(imagen, 'base64') ELSE NULL END AS imagen,
         imagen_mime;
       `,
-      [id_usuario, titulo, tipo, descuento, fecha_inicio, fecha_fin, imagenBuffer, imagen_mime]
+      [id_usuario, id_producto, titulo, tipo, descuento, fecha_inicio, fecha_fin, imagenBuffer, imagen_mime]
     );
 
     await client.query("COMMIT");
@@ -1221,46 +1263,32 @@ app.post("/api/promociones", async (req, res) => {
   }
 });
 
-async function actualizarPromocionPorId(req, res) {
+const actualizarPromocionPorId = async (req, res) => {
   try {
     const id = Number(req.params.id);
-
-    if (!id) {
-      return res.status(400).json({ message: "ID de promoción no válido" });
-    }
+    const descuento = req.body.descuento === undefined ? undefined : Number(req.body.descuento);
+    const estado = req.body.estado === undefined ? undefined : req.body.estado === true;
+    const fecha_fin = req.body.fecha_fin === undefined ? undefined : req.body.fecha_fin;
 
     const campos = [];
     const valores = [];
 
-    if (req.body.estado !== undefined) {
-      valores.push(req.body.estado === true || req.body.estado === "true" || req.body.estado === 1 || req.body.estado === "1");
-      campos.push(`estado = $${valores.length}`);
-    }
-
-    if (req.body.fecha_inicio !== undefined) {
-      valores.push(req.body.fecha_inicio || null);
-      campos.push(`fecha_inicio = $${valores.length}`);
-    }
-
-    if (req.body.fecha_fin !== undefined) {
-      valores.push(req.body.fecha_fin || null);
-      campos.push(`fecha_fin = $${valores.length}`);
-    }
-
-    if (req.body.descuento !== undefined) {
-      const descuento = Number(req.body.descuento);
-
-      if (!Number.isFinite(descuento) || !Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
+    if (descuento !== undefined) {
+      if (!Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
         return res.status(400).json({ message: "El descuento debe ser un número entero del 0 al 15" });
       }
-
+      campos.push(`descuento = $${campos.length + 1}`);
       valores.push(descuento);
-      campos.push(`descuento = $${valores.length}`);
+    }
 
-      if (descuento === 0 && req.body.estado === undefined) {
-        valores.push(false);
-        campos.push(`estado = $${valores.length}`);
-      }
+    if (estado !== undefined) {
+      campos.push(`estado = $${campos.length + 1}`);
+      valores.push(estado);
+    }
+
+    if (fecha_fin !== undefined) {
+      campos.push(`fecha_fin = $${campos.length + 1}`);
+      valores.push(fecha_fin);
     }
 
     if (!campos.length) {
@@ -1277,6 +1305,7 @@ async function actualizarPromocionPorId(req, res) {
       RETURNING
         id_promocion,
         id_usuario,
+        id_producto,
         titulo,
         tipo,
         descuento,
@@ -1291,12 +1320,11 @@ async function actualizarPromocionPorId(req, res) {
     );
 
     if (!rows.length) return res.status(404).json({ message: "Promoción no encontrada" });
-
     res.json(rows[0]);
   } catch (error) {
     manejarError(res, error, "No se pudo actualizar la promoción");
   }
-}
+};
 
 app.patch("/api/promociones/:id", actualizarPromocionPorId);
 app.put("/api/promociones/:id", actualizarPromocionPorId);
@@ -1305,17 +1333,13 @@ app.delete("/api/promociones/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
-    if (!id) {
-      return res.status(400).json({ message: "ID de promoción no válido" });
-    }
-
     const { rows } = await pool.query(
       `
       UPDATE promocion
       SET estado = false,
           fecha_fin = (CURRENT_DATE - INTERVAL '1 day')::date
       WHERE id_promocion = $1
-      RETURNING id_promocion, titulo, descuento, estado, fecha_fin;
+      RETURNING id_promocion, id_producto, titulo, descuento, estado, fecha_fin;
       `,
       [id]
     );
@@ -1350,3 +1374,4 @@ inicializarBaseDatos().finally(() => {
     console.log(`Servidor conectado en el puerto ${PORT}`);
   });
 });
+
