@@ -124,6 +124,7 @@ function mapPromocionApi(pr) {
   return {
     id_promocion: pr.id_promocion,
     id_usuario: pr.id_usuario,
+    id_producto: pr.id_producto || null,
     titulo: pr.titulo || "",
     tipo: pr.tipo || "porcentaje",
     descuento: Number(pr.descuento || 0),
@@ -175,21 +176,34 @@ function aplicarPromocionesAProductos(productos, promociones) {
     return fecha * 100000 + id;
   };
 
+  const promosPorId = new Map();
   const promosPorTitulo = new Map();
 
   promocionesActivas.forEach((pr) => {
-    const clave = normalizar(pr.titulo);
-    const actual = promosPorTitulo.get(clave);
+    const porcentaje = Number(pr?.descuento || 0);
+    if (porcentaje <= 0) return;
 
-    // Si hay varias promociones del mismo producto, gana la más nueva.
-    // Esto corrige el caso donde guardas 5%/15% pero al recargar vuelve el 10% viejo.
-    if (!actual || valorOrdenPromo(pr) > valorOrdenPromo(actual)) {
-      promosPorTitulo.set(clave, pr);
+    if (pr.id_producto) {
+      const claveId = String(pr.id_producto);
+      const actualId = promosPorId.get(claveId);
+      if (!actualId || valorOrdenPromo(pr) > valorOrdenPromo(actualId)) {
+        promosPorId.set(claveId, pr);
+      }
+    }
+
+    const claveTitulo = normalizar(pr.titulo);
+    if (claveTitulo) {
+      const actualTitulo = promosPorTitulo.get(claveTitulo);
+      if (!actualTitulo || valorOrdenPromo(pr) > valorOrdenPromo(actualTitulo)) {
+        promosPorTitulo.set(claveTitulo, pr);
+      }
     }
   });
 
   return productos.map((p) => {
-    const promo = promosPorTitulo.get(normalizar(p.nombre));
+    // Primero se busca por id_producto, porque sirve para TODOS los productos
+    // aunque tengan nombres parecidos. El título solo queda como respaldo.
+    const promo = promosPorId.get(String(p.id_producto)) || promosPorTitulo.get(normalizar(p.nombre));
     const porcentaje = Number(promo?.descuento || 0);
 
     if (!promo || porcentaje <= 0) {
@@ -309,9 +323,17 @@ function estrellas(calificacion = 5) {
 }
 
 async function apiFetch(path, options = {}) {
-  const res = await fetch(`${API_URL}${path}`, {
+  const method = String(options.method || "GET").toUpperCase();
+  const pathFinal =
+    method === "GET"
+      ? `${path}${path.includes("?") ? "&" : "?"}_t=${Date.now()}`
+      : path;
+
+  const res = await fetch(`${API_URL}${pathFinal}`, {
+    cache: "no-store",
     headers: {
       "Content-Type": "application/json",
+      "Cache-Control": "no-cache",
       ...(options.headers || {}),
     },
     ...options,
@@ -2831,94 +2853,52 @@ function Admin({
     };
 
     try {
+      let productoGuardado = null;
+
       if (editando) {
-        await apiFetch(`/productos/${editando}`, {
+        productoGuardado = await apiFetch(`/productos/${editando}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         });
         mostrarToast("Producto actualizado correctamente");
       } else {
-        await apiFetch("/productos", {
+        productoGuardado = await apiFetch("/productos", {
           method: "POST",
           body: JSON.stringify(payload),
         });
         mostrarToast("Producto agregado correctamente");
       }
 
+      const idProductoPromo = productoGuardado?.id_producto || idEditando;
 
-      if (descuentoPorcentaje > 0) {
-        // Primero apagamos promociones anteriores del mismo producto.
-        // Así al recargar no vuelve el 10% viejo ni se mezclan descuentos.
-        await desactivarPromocionesProducto(form.nombre.trim()).catch(() => null);
+      // Siempre mandamos el porcentaje al servidor.
+      // 0 = quitar promoción. 1 a 15 = guardar promoción activa de hoy.
+      // id_producto hace que funcione para TODOS los productos, no solo por nombre.
+      await apiFetch("/promociones", {
+        method: "POST",
+        body: JSON.stringify({
+          id_usuario: usuario?.id_usuario || 1,
+          id_producto: idProductoPromo,
+          titulo: productoGuardado?.nombre || form.nombre.trim(),
+          tipo: "porcentaje",
+          descuento: descuentoPorcentaje,
+          fecha_inicio: fechaInput(),
+          fecha_fin: fechaInput(),
+          estado: descuentoPorcentaje > 0,
+          imagen_base64: imagenData?.base64 || null,
+          imagen_mime: imagenData?.mime || null,
+        }),
+      });
 
-        await apiFetch("/promociones", {
-          method: "POST",
-          body: JSON.stringify({
-            id_usuario: usuario?.id_usuario || 1,
-            titulo: form.nombre.trim(),
-            tipo: "porcentaje",
-            descuento: descuentoPorcentaje,
-            fecha_inicio: fechaInput(),
-            fecha_fin: fechaInput(),
-            estado: true,
-            imagen_base64: imagenData?.base64 || null,
-            imagen_mime: imagenData?.mime || null,
-          }),
-        });
-      } else {
-        await desactivarPromocionesProducto(form.nombre.trim());
-      }
-
-      if (descuentoPorcentaje === 0) {
-        mostrarToast(editando ? "Producto actualizado y descuento quitado" : "Producto guardado sin descuento");
-      } else {
-        mostrarToast(`Producto guardado con ${descuentoPorcentaje}% de descuento`);
-      }
+      mostrarToast(
+        descuentoPorcentaje === 0
+          ? (editando ? "Producto actualizado y descuento quitado" : "Producto guardado sin descuento")
+          : `Producto guardado con ${descuentoPorcentaje}% de descuento`
+      );
 
       limpiar();
+      // No hacemos cambios falsos en pantalla: recargamos desde la BD para que admin y cliente coincidan.
       await recargarProductos();
-
-      // Refuerzo visual inmediato: después de guardar, actualizamos también
-      // el producto en pantalla para que el cambio de porcentaje se vea al instante.
-      // Si descuentoPorcentaje es 0, se quita la promoción de la vista.
-      if (idEditando) {
-        const promoPantalla =
-          descuentoPorcentaje > 0
-            ? {
-                titulo: form.nombre.trim(),
-                tipo: "porcentaje",
-                descuento: descuentoPorcentaje,
-                fecha_inicio: fechaInput(),
-                fecha_fin: fechaInput(),
-                estado: true,
-              }
-            : null;
-
-        setProductos((prev) =>
-          prev.map((p) =>
-            p.id_producto === idEditando || p.id === idEditando
-              ? {
-                  ...p,
-                  codigo_producto: codigo,
-                  id_categoria: Number(form.id_categoria),
-                  categoria: slugCategoria(Number(form.id_categoria)),
-                  nombre: form.nombre.trim(),
-                  presentacion: form.presentacion,
-                  descripcion: form.descripcion || "Sin descripción.",
-                  historia: form.historia,
-                  precio: Number(form.precio),
-                  stock: Number(form.stock || 0),
-                  video: form.video || "",
-                  descuento:
-                    descuentoPorcentaje > 0
-                      ? precioConDescuento(Number(form.precio), descuentoPorcentaje)
-                      : 0,
-                  promocion: promoPantalla,
-                }
-              : p
-          )
-        );
-      }
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar el producto en la BD");
     }
@@ -2988,34 +2968,27 @@ function Admin({
     }
 
     // Promoción de un solo día: inicia hoy y termina hoy.
-    // Si el descuento es 0, NO mandamos POST con 0 porque el backend lo toma como dato vacío.
-    // En su lugar desactivamos/eliminamos las promociones anteriores del producto.
+    // 0 = quitar promoción; 1 a 15 = guardar promoción activa.
     const fechaInicio = fechaInput();
     const fechaFin = fechaInput();
     const imagenPromo = imagenParaPromocion(p);
 
     try {
-      if (descuento > 0) {
-        // Apagamos cualquier promoción anterior antes de guardar la nueva.
-        await desactivarPromocionesProducto(p.nombre).catch(() => null);
-
-        await apiFetch("/promociones", {
-          method: "POST",
-          body: JSON.stringify({
-            id_usuario: usuario?.id_usuario || 1,
-            titulo: p.nombre,
-            tipo: "porcentaje",
-            descuento,
-            fecha_inicio: fechaInicio,
-            fecha_fin: fechaFin,
-            estado: true,
-            imagen_base64: imagenPromo.base64,
-            imagen_mime: imagenPromo.mime,
-          }),
-        });
-      } else {
-        await desactivarPromocionesProducto(p.nombre);
-      }
+      await apiFetch("/promociones", {
+        method: "POST",
+        body: JSON.stringify({
+          id_usuario: usuario?.id_usuario || 1,
+          id_producto: p.id_producto,
+          titulo: p.nombre,
+          tipo: "porcentaje",
+          descuento,
+          fecha_inicio: fechaInicio,
+          fecha_fin: fechaFin,
+          estado: descuento > 0,
+          imagen_base64: imagenPromo.base64,
+          imagen_mime: imagenPromo.mime,
+        }),
+      });
 
       mostrarToast(
         descuento === 0
@@ -3023,31 +2996,8 @@ function Admin({
           : `Promoción guardada por hoy: ${descuento}% de descuento`
       );
 
+      // Recargamos desde BD. Así admin y cliente ven lo mismo.
       await recargarProductos();
-
-      // Refuerzo visual inmediato para que el descuento cambie al instante.
-      setProductos((prev) =>
-        prev.map((x) =>
-          x.id_producto === p.id_producto || x.id === p.id
-            ? {
-                ...x,
-                descuento: descuento > 0 ? precioConDescuento(Number(x.precio || p.precio), descuento) : 0,
-                promocion:
-                  descuento > 0
-                    ? {
-                        ...(x.promocion || {}),
-                        titulo: x.nombre || p.nombre,
-                        tipo: "porcentaje",
-                        descuento,
-                        fecha_inicio: fechaInicio,
-                        fecha_fin: fechaFin,
-                        estado: true,
-                      }
-                    : null,
-              }
-            : x
-        )
-      );
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar la promoción en la BD");
     }
