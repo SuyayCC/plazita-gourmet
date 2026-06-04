@@ -941,6 +941,11 @@ const categoriaServicios = {
   };
 
   const agregarCarrito = (p) => {
+    if (usuario?.rol !== "cliente") {
+      mostrarToast("Solo los clientes pueden agregar productos al carrito");
+      return;
+    }
+
     const disponible = productos.find((x) => x.id === p.id)?.stock ?? p.stock;
     const cantidadEnCarrito = carrito.find((x) => x.id === p.id)?.cantidad || 0;
 
@@ -971,6 +976,11 @@ const categoriaServicios = {
     if (!usuario) {
       mostrarToast("Primero inicia sesión");
       setVista("login");
+      return;
+    }
+
+    if (usuario?.rol !== "cliente") {
+      mostrarToast("Solo los clientes pueden realizar compras");
       return;
     }
 
@@ -1144,25 +1154,40 @@ const categoriaServicios = {
             abrirProducto={abrirProducto}
             agregarCarrito={agregarCarrito}
             categorias={categorias}
+            usuario={usuario}
           />
         )}
 
-        {vista === "producto" && producto && <Detalle producto={producto} agregarCarrito={agregarCarrito} setVideo={setVideo} />}
+        {vista === "producto" && producto && (
+          <Detalle
+            producto={producto}
+            agregarCarrito={agregarCarrito}
+            setVideo={setVideo}
+            usuario={usuario}
+          />
+        )}
         {vista === "perfil" && <Perfil usuario={usuario} navegar={navegar} setUsuario={setUsuario} eliminarCuenta={eliminarCuenta} modificarUsuario={modificarUsuario} />}
-        {vista === "descuentos" && <Descuentos productos={productos.filter((p) => Number(p.descuento || 0) > 0 && p.promocion && promocionActiva(p.promocion))} abrirProducto={abrirProducto} agregarCarrito={agregarCarrito} />}
+        {vista === "descuentos" && (
+          <Descuentos
+            productos={productos.filter((p) => Number(p.descuento || 0) > 0 && p.promocion && promocionActiva(p.promocion))}
+            abrirProducto={abrirProducto}
+            agregarCarrito={agregarCarrito}
+            usuario={usuario}
+          />
+        )}
         {vista === "tiendas" && <Tiendas empresa={empresa} />}
         {vista === "contacto" && <Contacto empresa={empresa} usuario={usuario} comentarios={comentarios} registrarComentario={registrarComentario} />}
         {vista === "nosotros" && <Nosotros empresa={empresa} />}
         {vista === "cabanas" && <Cabanas />}
-        {vista === "carrito" && (
-  <Carrito
-    carrito={carrito}
-    setCarrito={setCarrito}
-    confirmarCompra={confirmarCompra}
-    usuario={usuario}
-    navegar={navegar}
-  />
-)}
+        {vista === "carrito" && usuario?.rol === "cliente" && (
+          <Carrito
+            carrito={carrito}
+            setCarrito={setCarrito}
+            confirmarCompra={confirmarCompra}
+            usuario={usuario}
+            navegar={navegar}
+          />
+        )}
 
 {vista === "pedidos" && (
   <Pedidos
@@ -1365,7 +1390,7 @@ function Home({ navegar, setCategoria, productos, categorias }) {
   );
 }
 
-function Catalogo({ productos, categoria, setCategoria, abrirProducto, agregarCarrito, categorias }) {
+function Catalogo({ productos, categoria, setCategoria, abrirProducto, agregarCarrito, categorias, usuario }) {
   const categoriasProductos = categorias.filter((c) => !c.servicio);
   const title = categoria ? categoriasProductos.find((c) => c.id === categoria)?.nombre : "Catálogo de Productos";
 
@@ -1388,7 +1413,13 @@ function Catalogo({ productos, categoria, setCategoria, abrirProducto, agregarCa
       ) : (
         <div className="product-grid">
           {productos.map((p) => (
-            <ProductCard key={p.id} p={p} abrirProducto={abrirProducto} agregarCarrito={agregarCarrito} />
+            <ProductCard
+              key={p.id}
+              p={p}
+              abrirProducto={abrirProducto}
+              agregarCarrito={agregarCarrito}
+              usuario={usuario}
+            />
           ))}
         </div>
       )}
@@ -1396,7 +1427,9 @@ function Catalogo({ productos, categoria, setCategoria, abrirProducto, agregarCa
   );
 }
 
-function ProductCard({ p, abrirProducto, agregarCarrito }) {
+function ProductCard({ p, abrirProducto, agregarCarrito, usuario }) {
+  const esCliente = usuario?.rol === "cliente";
+
   return (
     <article className="product-card">
       <div className="product-photo">
@@ -1417,15 +1450,20 @@ function ProductCard({ p, abrirProducto, agregarCarrito }) {
 
       <div className="product-actions">
         <button onClick={() => abrirProducto(p)}>Ver</button>
-        <button disabled={(p.stock || 0) <= 0} onClick={() => agregarCarrito(p)}>
-          {(p.stock || 0) <= 0 ? "Agotado" : "Agregar"}
-        </button>
+
+        {esCliente && (
+          <button disabled={(p.stock || 0) <= 0} onClick={() => agregarCarrito(p)}>
+            {(p.stock || 0) <= 0 ? "Agotado" : "Agregar"}
+          </button>
+        )}
       </div>
     </article>
   );
 }
 
-function Detalle({ producto, agregarCarrito, setVideo }) {
+function Detalle({ producto, agregarCarrito, setVideo, usuario }) {
+  const esCliente = usuario?.rol === "cliente";
+
   return (
     <section className="screen">
       <h1 className="section-title">{producto.nombre}</h1>
@@ -1445,9 +1483,12 @@ function Detalle({ producto, agregarCarrito, setVideo }) {
           <p className="story-detail"><b>Historia:</b> {producto.historia}</p>
 
           <button className="video-link" onClick={() => setVideo(true)}>Ver video</button>
-          <button className="pink-btn" disabled={(producto.stock || 0) <= 0} onClick={() => agregarCarrito(producto)}>
-            {(producto.stock || 0) <= 0 ? "Producto agotado" : "Agregar al carrito"}
-          </button>
+
+          {esCliente && (
+            <button className="pink-btn" disabled={(producto.stock || 0) <= 0} onClick={() => agregarCarrito(producto)}>
+              {(producto.stock || 0) <= 0 ? "Producto agotado" : "Agregar al carrito"}
+            </button>
+          )}
         </div>
       </div>
     </section>
@@ -1679,7 +1720,7 @@ function Perfil({ usuario, navegar, setUsuario, eliminarCuenta, modificarUsuario
   );
 }
 
-function Descuentos({ productos, abrirProducto, agregarCarrito }) {
+function Descuentos({ productos, abrirProducto, agregarCarrito, usuario }) {
   return (
     <section className="screen">
       <h1 className="section-title">Descuentos</h1>
@@ -1688,7 +1729,13 @@ function Descuentos({ productos, abrirProducto, agregarCarrito }) {
       ) : (
         <div className="product-grid">
           {productos.map((p) => (
-            <ProductCard key={p.id} p={p} abrirProducto={abrirProducto} agregarCarrito={agregarCarrito} />
+            <ProductCard
+              key={p.id}
+              p={p}
+              abrirProducto={abrirProducto}
+              agregarCarrito={agregarCarrito}
+              usuario={usuario}
+            />
           ))}
         </div>
       )}
