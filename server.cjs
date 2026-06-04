@@ -1170,7 +1170,7 @@ app.post("/api/promociones", async (req, res) => {
     const tipo = String(req.body.tipo || "porcentaje").trim().toLowerCase();
     const descuento = Number(req.body.descuento);
     const fecha_inicio = req.body.fecha_inicio || new Date().toISOString().slice(0, 10);
-    const fecha_fin = req.body.fecha_fin || fecha_inicio;
+    const fecha_fin = req.body.fecha_fin || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const imagenBuffer = req.body.imagen_base64 ? Buffer.from(req.body.imagen_base64, "base64") : null;
     const imagen_mime = req.body.imagen_mime || null;
 
@@ -1374,4 +1374,3 @@ inicializarBaseDatos().finally(() => {
     console.log(`Servidor conectado en el puerto ${PORT}`);
   });
 });
-
