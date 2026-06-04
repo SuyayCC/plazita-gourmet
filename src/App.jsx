@@ -165,14 +165,32 @@ function precioConDescuento(precio, descuento) {
 
 function aplicarPromocionesAProductos(productos, promociones) {
   const promocionesActivas = promociones.filter(promocionActiva);
-  const promosPorTitulo = new Map(promocionesActivas.map((pr) => [normalizar(pr.titulo), pr]));
+
+  const valorOrdenPromo = (pr) => {
+    const id = Number(pr.id_promocion || pr.id || 0);
+    const fecha = Date.parse(pr.fecha_inicio || pr.fecha || pr.created_at || "") || 0;
+    return fecha * 100000 + id;
+  };
+
+  const promosPorTitulo = new Map();
+
+  promocionesActivas.forEach((pr) => {
+    const clave = normalizar(pr.titulo);
+    const actual = promosPorTitulo.get(clave);
+
+    // Si existen varias promociones del mismo producto, usamos la más reciente.
+    // Esto permite cambiar de 10% a 5% y también usar 0% para quitar la promo.
+    if (!actual || valorOrdenPromo(pr) >= valorOrdenPromo(actual)) {
+      promosPorTitulo.set(clave, pr);
+    }
+  });
 
   return productos.map((p) => {
     const promo = promosPorTitulo.get(normalizar(p.nombre));
+    const porcentaje = Number(promo?.descuento || 0);
 
-    // Importante: si el producto no tiene una promoción activa,
-    // limpiamos el descuento para que NO aparezca en promociones.
-    if (!promo) {
+    // Si no hay promoción o la última promoción es 0%, el producto vuelve a precio normal.
+    if (!promo || porcentaje <= 0) {
       return {
         ...p,
         descuento: 0,
@@ -182,7 +200,7 @@ function aplicarPromocionesAProductos(productos, promociones) {
 
     return {
       ...p,
-      descuento: precioConDescuento(p.precio, promo.descuento),
+      descuento: precioConDescuento(p.precio, porcentaje),
       promocion: promo,
     };
   });
@@ -1462,7 +1480,7 @@ function ProductCard({ p, abrirProducto, agregarCarrito, usuario }) {
       <p className={p.descuento ? "old-price" : "price"}>{money(p.precio)}</p>
       {p.descuento ? <p className="price">{money(p.descuento)}</p> : null}
       {p.promocion?.descuento ? <p className="promo">-{Number(p.promocion.descuento).toFixed(0)}% de descuento</p> : null}
-      <small>Stock: {p.stock || 0} · Vendidos: {p.vendidos || 0} · Buscado: {p.busquedas || 0}</small>
+      <small>Stock: {p.stock || 0} · Vendidos: {p.vendidos || 0}</small>
 
       <div className="product-actions">
         <button onClick={() => abrirProducto(p)}>Ver</button>
@@ -1495,7 +1513,6 @@ function Detalle({ producto, agregarCarrito, setVideo, usuario }) {
           <p><b>Descuento:</b> {producto.descuento ? `${money(producto.descuento)}${producto.promocion?.descuento ? ` (-${Number(producto.promocion.descuento).toFixed(0)}%)` : ""}` : "Ninguno"}</p>
           <p><b>Stock:</b> {producto.stock} unidades</p>
           <p><b>Vendidos:</b> {producto.vendidos || 0}</p>
-          <p><b>Búsquedas:</b> {producto.busquedas || 0}</p>
           <p className="story-detail"><b>Historia:</b> {producto.historia}</p>
 
           <button className="video-link" onClick={() => setVideo(true)}>Ver video</button>
@@ -2576,7 +2593,7 @@ function Admin({
     nombre: "",
     id_categoria: "",
     precio: "",
-    descuento: "",
+    descuento: "0",
     stock: "",
     presentacion: "",
     descripcion: "",
@@ -2632,13 +2649,13 @@ function Admin({
   const codigoProductoValido = (codigo) => /^[A-Z]{2,5}-[0-9]{4,12}$/.test(String(codigo || "").trim().toUpperCase());
 
   const limitarDescuentoPorcentaje = (valor) => {
-    const soloNumeros = String(valor || "").replace(/\D/g, "");
+    const soloNumeros = String(valor ?? "").replace(/\D/g, "");
 
-    if (!soloNumeros) return "";
+    if (soloNumeros === "") return "";
 
     const numero = Number(soloNumeros);
 
-    if (numero < 1) return "1";
+    if (numero < 0) return "0";
     if (numero > 15) return "15";
 
     return String(numero);
@@ -2679,7 +2696,7 @@ function Admin({
       nombre: "",
       id_categoria: categoriasProductos[0]?.id_categoria ? String(categoriasProductos[0].id_categoria) : "",
       precio: "",
-      descuento: "",
+      descuento: "0",
       stock: "",
       presentacion: "",
       descripcion: "",
@@ -2733,10 +2750,10 @@ function Admin({
       return;
     }
 
-    const descuentoPorcentaje = form.descuento === "" ? null : Number(form.descuento);
+    const descuentoPorcentaje = form.descuento === "" ? 0 : Number(form.descuento);
 
-    if (form.descuento !== "" && (!Number.isInteger(descuentoPorcentaje) || descuentoPorcentaje < 1 || descuentoPorcentaje > 15)) {
-      mostrarToast("El descuento debe ser un porcentaje entero del 1 al 15");
+    if (!Number.isInteger(descuentoPorcentaje) || descuentoPorcentaje < 0 || descuentoPorcentaje > 15) {
+      mostrarToast("El descuento debe ser un porcentaje entero del 0 al 15");
       return;
     }
 
@@ -2772,7 +2789,7 @@ function Admin({
       }
 
 
-      if (descuentoPorcentaje) {
+      if (editando || descuentoPorcentaje > 0) {
         await apiFetch("/promociones", {
           method: "POST",
           body: JSON.stringify({
@@ -2787,6 +2804,12 @@ function Admin({
             imagen_mime: imagenData?.mime || null,
           }),
         });
+      }
+
+      if (descuentoPorcentaje === 0) {
+        mostrarToast(editando ? "Producto actualizado y descuento quitado" : "Producto guardado sin descuento");
+      } else {
+        mostrarToast(`Producto guardado con ${descuentoPorcentaje}% de descuento`);
       }
 
       limpiar();
@@ -2806,7 +2829,7 @@ function Admin({
       nombre: p.nombre,
       id_categoria: String(p.id_categoria),
       precio: String(p.precio),
-      descuento: p.promocion?.descuento ? String(Math.min(15, Math.max(1, Number(p.promocion.descuento)))) : "",
+      descuento: p.promocion?.descuento ? String(Math.min(15, Math.max(0, Number(p.promocion.descuento)))) : "0",
       stock: String(p.stock || 0),
       presentacion: p.presentacion || "",
       descripcion: p.descripcion || "",
@@ -2839,8 +2862,8 @@ function Admin({
 
   const promoRapida = async (p) => {
     const descuentoTexto = window.prompt(
-      `¿Qué porcentaje de descuento tendrá "${p.nombre}"? Escribe un número entero del 1 al 15`,
-      "10"
+      `¿Qué porcentaje de descuento tendrá "${p.nombre}"? Escribe 0 para quitarlo o un número entero del 1 al 15`,
+      p.promocion?.descuento ? String(p.promocion.descuento) : "10"
     );
 
     if (descuentoTexto === null) return;
@@ -2848,19 +2871,19 @@ function Admin({
     const textoLimpio = String(descuentoTexto).trim();
 
     if (!/^\d+$/.test(textoLimpio)) {
-      mostrarToast("El descuento solo acepta números enteros del 1 al 15");
+      mostrarToast("El descuento solo acepta números enteros del 0 al 15");
       return;
     }
 
     const descuento = Number(textoLimpio);
 
-    if (!Number.isInteger(descuento) || descuento < 1 || descuento > 15) {
-      mostrarToast("El descuento debe ser un número del 1 al 15");
+    if (!Number.isInteger(descuento) || descuento < 0 || descuento > 15) {
+      mostrarToast("El descuento debe ser un número del 0 al 15");
       return;
     }
 
     // Promoción de un solo día: inicia hoy y termina hoy.
-    // Mañana dejará de aplicarse y el producto volverá a su precio normal.
+    // Si el descuento es 0, se guarda como reemplazo para quitar la promoción activa.
     const fechaInicio = fechaInput();
     const fechaFin = fechaInput();
     const imagenPromo = imagenParaPromocion(p);
@@ -2881,7 +2904,7 @@ function Admin({
         }),
       });
 
-      mostrarToast(`Promoción guardada por hoy: ${descuento}% de descuento`);
+      mostrarToast(descuento === 0 ? "Promoción quitada por hoy" : `Promoción guardada por hoy: ${descuento}% de descuento`);
       await recargarProductos();
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar la promoción en la BD");
@@ -3149,9 +3172,9 @@ function Admin({
                 <span>Descuento (%)</span>
                 <div className="percent-field">
                   <input
-                    placeholder="1 a 15"
+                    placeholder="0 a 15"
                     type="number"
-                    min="1"
+                    min="0"
                     max="15"
                     step="1"
                     inputMode="numeric"
@@ -3252,7 +3275,7 @@ function Admin({
                         </span>
                       ) : null}
                     </p>
-                    <p>Vendidos: {p.vendidos || 0} · Búsquedas: {p.busquedas || 0}</p>
+                    <p>Vendidos: {p.vendidos || 0}</p>
                   </div>
 
                   <div className="admin-actions">
