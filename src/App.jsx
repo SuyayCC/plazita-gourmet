@@ -43,6 +43,18 @@ function fechaTicket(fecha) {
   return f.toLocaleString("es-MX", { dateStyle: "medium", timeStyle: "short" });
 }
 
+function fechaParaFiltro(fecha) {
+  const f = fecha ? new Date(fecha) : new Date();
+
+  if (Number.isNaN(f.getTime())) return "";
+
+  const yyyy = f.getFullYear();
+  const mm = String(f.getMonth() + 1).padStart(2, "0");
+  const dd = String(f.getDate()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function slugCategoria(idCategoria) {
   return `cat-${idCategoria}`;
 }
@@ -237,12 +249,16 @@ function mapPedidoApi(p) {
     : [];
 
   const idPedido = p.id_pedido || p.id || p.folio || Date.now();
+  const fechaRaw = p.fecha || p.fecha_pedido || p.fecha_creacion || p.created_at || new Date().toISOString();
+  const fechaObj = new Date(fechaRaw);
+  const fechaISO = Number.isNaN(fechaObj.getTime()) ? "" : fechaParaFiltro(fechaRaw);
 
   return {
     id: idPedido,
     id_pedido: p.id_pedido || p.id || null,
     folio: p.folio || `PED-${idPedido}`,
-    fecha: p.fecha ? fechaTicket(p.fecha) : fechaTicket(),
+    fecha: fechaISO ? fechaTicket(fechaRaw) : String(fechaRaw),
+    fechaISO,
     cliente: {
       nombre: p.cliente?.nombre || p.cliente_nombre || p.nombre_cliente || p.nombre || "Cliente",
       correo: p.cliente?.correo || p.cliente_correo || p.correo || "",
@@ -2104,6 +2120,7 @@ function Carrito({ carrito, setCarrito, confirmarCompra, usuario, navegar }) {
 function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast, recargarPedidos }) {
   const [pestana, setPestana] = useState("actuales");
   const [codigosIngresados, setCodigosIngresados] = useState({});
+  const [fechaBusqueda, setFechaBusqueda] = useState("");
 
   const rolUsuario = String(usuario?.rol || "").toLowerCase().trim();
   const esAdmin = rolUsuario === "admin" || rolUsuario === "administrador";
@@ -2115,15 +2132,31 @@ function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast, recargar
     "Pedido entregado",
   ];
 
+  const obtenerFechaPedido = (pedido) => {
+    if (pedido.fechaISO) return pedido.fechaISO;
+
+    const fecha = new Date(pedido.fecha);
+    if (!Number.isNaN(fecha.getTime())) {
+      return fechaParaFiltro(fecha);
+    }
+
+    return "";
+  };
+
   const pedidosActuales = pedidos.filter((p) => p.estado !== "entregado");
   const pedidosEntregados = pedidos.filter((p) => p.estado === "entregado");
 
-  const lista =
+  const listaBase =
     pestana === "actuales"
       ? pedidosActuales
       : pestana === "entregados"
       ? pedidosEntregados
       : pedidos;
+
+  const lista = listaBase.filter((pedido) => {
+    if (!esAdmin || !fechaBusqueda) return true;
+    return obtenerFechaPedido(pedido) === fechaBusqueda;
+  });
 
   const guardarEstadoPedido = async (pedido, cambios) => {
     const idPedido = pedido.id_pedido || pedido.id;
@@ -2227,6 +2260,33 @@ function Pedidos({ pedidos, setPedidos, navegar, usuario, mostrarToast, recargar
           🔄 Actualizar pedidos
         </button>
       </div>
+
+      {esAdmin && (
+        <div className="orders-date-search">
+          <label htmlFor="buscar-fecha-pedido">Buscar pedido por fecha</label>
+
+          <div className="orders-date-row">
+            <input
+              id="buscar-fecha-pedido"
+              type="date"
+              value={fechaBusqueda}
+              onChange={(e) => setFechaBusqueda(e.target.value)}
+            />
+
+            {fechaBusqueda && (
+              <button type="button" className="green-btn" onClick={() => setFechaBusqueda("")}>
+                Limpiar fecha
+              </button>
+            )}
+          </div>
+
+          {fechaBusqueda && (
+            <small>
+              Mostrando {lista.length} pedido(s) del {fechaBusqueda}
+            </small>
+          )}
+        </div>
+      )}
 
       <div className="orders-tabs">
         <button
