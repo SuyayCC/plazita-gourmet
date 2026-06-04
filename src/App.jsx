@@ -2512,7 +2512,7 @@ function Admin({
   const [editando, setEditando] = useState(null);
   const [imagenData, setImagenData] = useState(null);
   const [form, setForm] = useState({
-    codigo_producto: "",
+    codigo_producto: "BF-",
     nombre: "",
     id_categoria: "",
     precio: "",
@@ -2571,11 +2571,38 @@ function Admin({
 
   const codigoProductoValido = (codigo) => /^[A-Z]{2,5}-[0-9]{4,12}$/.test(String(codigo || "").trim().toUpperCase());
 
+  const normalizarCodigoProducto = (valor) => {
+    const limpio = String(valor || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9-]/g, "");
+
+    if (!limpio) return "BF-";
+
+    if (!limpio.includes("-")) {
+      const prefijoSinGuion = limpio.replace(/[^A-Z]/g, "").slice(0, 5) || "BF";
+      const numerosSinGuion = limpio.replace(/\D/g, "").slice(0, 12);
+      return `${prefijoSinGuion}-${numerosSinGuion}`;
+    }
+
+    const [prefijoRaw = "", ...resto] = limpio.split("-");
+    const prefijo = prefijoRaw.replace(/[^A-Z]/g, "").slice(0, 5) || "BF";
+    const numeros = resto.join("").replace(/\D/g, "").slice(0, 12);
+
+    return `${prefijo}-${numeros}`;
+  };
+
+  const cambiarCodigoProducto = (valor) => {
+    setForm((prev) => ({
+      ...prev,
+      codigo_producto: normalizarCodigoProducto(valor),
+    }));
+  };
+
   const limpiar = () => {
     setEditando(null);
     setImagenData(null);
     setForm({
-      codigo_producto: "",
+      codigo_producto: "BF-",
       nombre: "",
       id_categoria: categoriasProductos[0]?.id_categoria ? String(categoriasProductos[0].id_categoria) : "",
       precio: "",
@@ -2986,34 +3013,115 @@ function Admin({
           <form className="admin-form" onSubmit={(e) => { e.preventDefault(); guardar(); }}>
             <h2>{editando ? "Editar producto" : "Agregar producto"}</h2>
 
-            <input
-              placeholder="ID del producto, ejemplo BF-98546521"
-              value={form.codigo_producto}
-              onChange={(e) => setForm({ ...form, codigo_producto: e.target.value.toUpperCase() })}
-            />
+            <label className="admin-field">
+              <span>ID del producto</span>
+              <input
+                placeholder="Ejemplo: BF-98546521"
+                value={form.codigo_producto}
+                onChange={(e) => cambiarCodigoProducto(e.target.value)}
+              />
+            </label>
 
-            <input placeholder="Nombre del producto" value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
+            <label className="admin-field">
+              <span>Nombre del producto</span>
+              <input
+                placeholder="Ejemplo: Tejate en polvo"
+                value={form.nombre}
+                onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+              />
+            </label>
 
-            <select value={form.id_categoria} onChange={(e) => setForm({ ...form, id_categoria: e.target.value })}>
-              {categoriasProductos.map((c) => (
-                <option value={c.id_categoria} key={c.id}>{c.nombre}</option>
-              ))}
-            </select>
+            <label className="admin-field">
+              <span>Categoría</span>
+              <select value={form.id_categoria} onChange={(e) => setForm({ ...form, id_categoria: e.target.value })}>
+                {categoriasProductos.map((c) => (
+                  <option value={c.id_categoria} key={c.id}>{c.nombre}</option>
+                ))}
+              </select>
+            </label>
 
-            <div className="two">
-              <input placeholder="Precio" type="number" value={form.precio} onChange={(e) => setForm({ ...form, precio: e.target.value })} />
-              <input placeholder="Descuento local" type="number" value={form.descuento} onChange={(e) => setForm({ ...form, descuento: e.target.value })} />
+            <div className="two admin-two">
+              <label className="admin-field">
+                <span>Precio</span>
+                <div className="money-field">
+                  <b>$</b>
+                  <input
+                    placeholder="0.00"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.precio}
+                    onChange={(e) => setForm({ ...form, precio: e.target.value })}
+                  />
+                </div>
+              </label>
+
+              <label className="admin-field">
+                <span>Descuento local</span>
+                <input
+                  placeholder="Ejemplo: 10"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.descuento}
+                  onChange={(e) => setForm({ ...form, descuento: e.target.value })}
+                />
+              </label>
             </div>
 
-            <div className="two">
-              <input placeholder="Stock" type="number" value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
-              <input placeholder="Presentación" value={form.presentacion} onChange={(e) => setForm({ ...form, presentacion: e.target.value })} />
+            <div className="two admin-two">
+              <label className="admin-field">
+                <span>Stock</span>
+                <input
+                  placeholder="Cantidad disponible"
+                  type="number"
+                  min="0"
+                  value={form.stock}
+                  onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                />
+              </label>
+
+              <label className="admin-field">
+                <span>Presentación</span>
+                <input
+                  placeholder="Ejemplo: 320 g"
+                  value={form.presentacion}
+                  onChange={(e) => setForm({ ...form, presentacion: e.target.value })}
+                />
+              </label>
             </div>
 
-            <textarea placeholder="Descripción" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
-            <textarea placeholder="Historia del producto" value={form.historia} onChange={(e) => setForm({ ...form, historia: e.target.value })} />
-            <input placeholder="Video / enlace opcional" value={form.video} onChange={(e) => setForm({ ...form, video: e.target.value })} />
-            <input type="file" accept="image/*" onChange={cambiarImagen} />
+            <label className="admin-field">
+              <span>Descripción</span>
+              <textarea
+                placeholder="Describe brevemente el producto"
+                value={form.descripcion}
+                onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
+              />
+            </label>
+
+            <label className="admin-field">
+              <span>Historia del producto</span>
+              <textarea
+                placeholder="Agrega la historia o información tradicional del producto"
+                value={form.historia}
+                onChange={(e) => setForm({ ...form, historia: e.target.value })}
+              />
+            </label>
+
+            <label className="admin-field">
+              <span>Video / enlace opcional</span>
+              <input
+                placeholder="Pega aquí el enlace si aplica"
+                value={form.video}
+                onChange={(e) => setForm({ ...form, video: e.target.value })}
+              />
+            </label>
+
+            <label className="admin-field">
+              <span>Imagen del producto</span>
+              <input className="file-input" type="file" accept="image/*" onChange={cambiarImagen} />
+            </label>
 
             {imagenData?.preview && <img src={imagenData.preview} alt="Vista previa" style={{ width: "100%", borderRadius: 14 }} />}
 
