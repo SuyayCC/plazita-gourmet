@@ -2626,6 +2626,7 @@ function Admin({
   const totalClientes = usuarios.filter((u) => u.rol === "cliente").length;
   const totalAdmins = usuarios.filter((u) => u.rol === "admin").length;
   const masVendidos = [...productos].sort((a, b) => (b.vendidos || 0) - (a.vendidos || 0)).slice(0, 5);
+  const masBuscados = [...productos].sort((a, b) => (b.busquedas || 0) - (a.busquedas || 0)).slice(0, 5);
 
   const codigoProductoValido = (codigo) => /^[A-Z]{2,5}-[0-9]{4,12}$/.test(String(codigo || "").trim().toUpperCase());
 
@@ -3292,6 +3293,24 @@ function Admin({
             )}
           </div>
 
+          <div className="admin-table">
+            <h2>Top 5 productos más buscados</h2>
+
+            {masBuscados.length === 0 ? (
+              <p className="empty">Aún no hay estadísticas de búsquedas.</p>
+            ) : (
+              masBuscados.map((p, i) => (
+                <div className="admin-row" key={p.id}>
+                  <img src={p.imagen} alt={p.nombre} />
+                  <div>
+                    <h3>#{i + 1} {p.nombre}</h3>
+                    {p.codigo_producto && <p>ID: {p.codigo_producto}</p>}
+                    <p>Búsquedas: <b>{p.busquedas || 0}</b></p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       )}
 
