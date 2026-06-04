@@ -129,6 +129,7 @@ function mapPromocionApi(pr) {
     descuento: Number(pr.descuento || 0),
     fecha_inicio: pr.fecha_inicio,
     fecha_fin: pr.fecha_fin,
+    fecha_creacion: pr.fecha_creacion || pr.created_at || pr.creado_en || pr.updated_at || "",
     estado: pr.estado !== false,
     imagen: imagenDesdeApi(pr.imagen, pr.imagen_mime, ""),
     imagen_mime: pr.imagen_mime || "",
@@ -168,7 +169,7 @@ function aplicarPromocionesAProductos(productos, promociones) {
 
   const valorOrdenPromo = (pr) => {
     const id = Number(pr.id_promocion || pr.id || 0);
-    const fecha = Date.parse(pr.fecha_inicio || pr.fecha || pr.created_at || "") || 0;
+    const fecha = Date.parse(pr.fecha_creacion || pr.updated_at || pr.created_at || pr.fecha_inicio || pr.fecha || "") || 0;
     return fecha * 100000 + id;
   };
 
@@ -2729,6 +2730,7 @@ function Admin({
   };
 
   const guardar = async () => {
+    const idEditando = editando;
     const codigo = form.codigo_producto.trim().toUpperCase();
 
     if (!codigo || !form.nombre || !form.precio || !form.id_categoria) {
@@ -2814,6 +2816,48 @@ function Admin({
 
       limpiar();
       await recargarProductos();
+
+      // Refuerzo visual inmediato: después de guardar, actualizamos también
+      // el producto en pantalla para que el cambio de porcentaje se vea al instante.
+      // Si descuentoPorcentaje es 0, se quita la promoción de la vista.
+      if (idEditando) {
+        const promoPantalla =
+          descuentoPorcentaje > 0
+            ? {
+                titulo: form.nombre.trim(),
+                tipo: "porcentaje",
+                descuento: descuentoPorcentaje,
+                fecha_inicio: fechaInput(),
+                fecha_fin: fechaInput(),
+                estado: true,
+              }
+            : null;
+
+        setProductos((prev) =>
+          prev.map((p) =>
+            p.id_producto === idEditando || p.id === idEditando
+              ? {
+                  ...p,
+                  codigo_producto: codigo,
+                  id_categoria: Number(form.id_categoria),
+                  categoria: slugCategoria(Number(form.id_categoria)),
+                  nombre: form.nombre.trim(),
+                  presentacion: form.presentacion,
+                  descripcion: form.descripcion || "Sin descripción.",
+                  historia: form.historia,
+                  precio: Number(form.precio),
+                  stock: Number(form.stock || 0),
+                  video: form.video || "",
+                  descuento:
+                    descuentoPorcentaje > 0
+                      ? precioConDescuento(Number(form.precio), descuentoPorcentaje)
+                      : 0,
+                  promocion: promoPantalla,
+                }
+              : p
+          )
+        );
+      }
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar el producto en la BD");
     }
@@ -2904,8 +2948,37 @@ function Admin({
         }),
       });
 
-      mostrarToast(descuento === 0 ? "Promoción quitada por hoy" : `Promoción guardada por hoy: ${descuento}% de descuento`);
+      mostrarToast(
+        descuento === 0
+          ? "Promoción quitada. El producto vuelve a precio normal"
+          : `Promoción guardada por hoy: ${descuento}% de descuento`
+      );
+
       await recargarProductos();
+
+      // Refuerzo visual inmediato para que el descuento cambie al instante.
+      setProductos((prev) =>
+        prev.map((x) =>
+          x.id_producto === p.id_producto || x.id === p.id
+            ? {
+                ...x,
+                descuento: descuento > 0 ? precioConDescuento(Number(x.precio || p.precio), descuento) : 0,
+                promocion:
+                  descuento > 0
+                    ? {
+                        ...(x.promocion || {}),
+                        titulo: x.nombre || p.nombre,
+                        tipo: "porcentaje",
+                        descuento,
+                        fecha_inicio: fechaInicio,
+                        fecha_fin: fechaFin,
+                        estado: true,
+                      }
+                    : null,
+              }
+            : x
+        )
+      );
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar la promoción en la BD");
     }
