@@ -925,3 +925,35 @@ textarea {
   color: #5b8c3b;
   font-weight: 700;
 }
+
+/* ===== Campo de descuento por porcentaje ===== */
+.admin-form .percent-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 2px solid #ececec;
+  border-radius: 16px;
+  background: #fff;
+  padding: 0 16px;
+}
+
+.admin-form .percent-field:focus-within {
+  border-color: #d13b82;
+  box-shadow: 0 0 0 3px rgba(209, 59, 130, 0.12);
+}
+
+.admin-form .percent-field input {
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding-left: 0 !important;
+  width: 100%;
+}
+
+.admin-form .percent-field b {
+  font-size: 22px;
+  color: #5c8c32;
+  line-height: 1;
+}
+
