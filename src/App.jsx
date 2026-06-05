@@ -74,10 +74,28 @@ function fraseCategoria(nombre = "") {
 function imagenDesdeApi(valor, mime, fallback) {
   if (!valor) return fallback;
 
-  const texto = String(valor);
+  const texto = String(valor).trim();
 
-  if (texto.startsWith("http") || texto.startsWith("/") || texto.startsWith("data:")) {
+  if (texto.startsWith("data:") || texto.startsWith("blob:")) {
     return texto;
+  }
+
+  if (texto.startsWith("http")) {
+    return texto;
+  }
+
+  const baseBackend = API_URL.replace(/\/api$/, "");
+
+  if (texto.startsWith("/api/")) {
+    return `${baseBackend}${texto}`;
+  }
+
+  if (texto.startsWith("/assets/")) {
+    return texto;
+  }
+
+  if (texto.startsWith("/")) {
+    return `${baseBackend}${texto}`;
   }
 
   return `data:${mime || "image/jpeg"};base64,${texto}`;

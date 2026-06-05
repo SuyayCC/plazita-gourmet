@@ -280,7 +280,7 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-app.get("/api/productos", async (req, res) => {
+app.get("/api/productos", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
@@ -299,15 +299,17 @@ app.get("/api/productos", async (req, res) => {
         COALESCE(p.busquedas, 0) AS busquedas,
         p.imagen_mime,
         p.video,
-        CASE WHEN p.imagen IS NOT NULL THEN CONCAT('/api/productos/', p.id_producto, '/imagen') ELSE NULL END AS imagen
+        CASE
+          WHEN p.imagen IS NOT NULL THEN encode(p.imagen, 'base64')
+          ELSE NULL
+        END AS imagen
       FROM producto p
       LEFT JOIN categoria c ON c.id_categoria = p.id_categoria
       WHERE p.estado = true
       ORDER BY p.id_producto;
     `);
 
-    const base = urlBase(req);
-    res.json(rows.map((p) => ({ ...p, imagen: p.imagen ? base + p.imagen : null })));
+    res.json(rows);
   } catch (error) {
     manejarError(res, error, "No se pudieron cargar los productos");
   }
