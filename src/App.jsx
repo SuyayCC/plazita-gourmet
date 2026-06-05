@@ -2618,12 +2618,16 @@ function Admin({
   const [editando, setEditando] = useState(null);
   const [imagenData, setImagenData] = useState(null);
   const [form, setForm] = useState({
-    codigo_producto: "BF-",
+    codigo_producto: "BFP-",
+    codigo_prefijo: "BFP-",
+    codigo_numero: "",
     nombre: "",
     id_categoria: "",
     precio: "",
     descuento: "0",
-    stock: "",
+    stock: "0",
+    stock_movimiento: "",
+    stock_operacion: "sumar",
     presentacion: "",
     descripcion: "",
     historia: "",
@@ -2641,9 +2645,105 @@ function Admin({
 
   const usuarioFormRef = useRef(null);
 
+  const PREFIJOS_PRODUCTO = [
+    { prefijo: "BFP-", nombre: "Bebidas Frías en Polvo" },
+    { prefijo: "BCP-", nombre: "Bebidas Calientes en Polvo" },
+    { prefijo: "SC-", nombre: "Sal de Chile" },
+    { prefijo: "SA-", nombre: "Salsas" },
+    { prefijo: "CHA-", nombre: "Chapulines" },
+  ];
+
+  const normalizarCategoria = (texto = "") =>
+    String(texto)
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim()
+      .toLowerCase();
+
+  const obtenerPrefijoPorNombreCategoria = (nombre = "") => {
+    const n = normalizarCategoria(nombre);
+
+    if (n.includes("fria") || n.includes("frías") || n.includes("frias")) return "BFP-";
+    if (n.includes("caliente")) return "BCP-";
+    if (n.includes("sal")) return "SC-";
+    if (n.includes("salsa")) return "SA-";
+    if (n.includes("chapulin") || n.includes("capellan")) return "CHA-";
+
+    return "BFP-";
+  };
+
+  const obtenerPrefijoPorCategoria = (idCategoria) => {
+    const categoriaEncontrada = categoriasProductos.find(
+      (c) => String(c.id_categoria) === String(idCategoria)
+    );
+
+    return obtenerPrefijoPorNombreCategoria(categoriaEncontrada?.nombre || "");
+  };
+
+  const separarCodigoProducto = (codigo = "") => {
+    const limpio = String(codigo || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9-]/g, "");
+
+    const prefijoValido = PREFIJOS_PRODUCTO.find((item) => limpio.startsWith(item.prefijo));
+
+    if (prefijoValido) {
+      return {
+        prefijo: prefijoValido.prefijo,
+        numero: limpio.slice(prefijoValido.prefijo.length).replace(/\D/g, "").slice(0, 12),
+      };
+    }
+
+    const [prefijoRaw = "", ...resto] = limpio.split("-");
+    const prefijo = `${prefijoRaw.replace(/[^A-Z]/g, "").slice(0, 5) || "BFP"}-`;
+    const numero = resto.join("").replace(/\D/g, "").slice(0, 12);
+
+    return { prefijo, numero };
+  };
+
+  const construirCodigoProducto = (prefijo, numero) =>
+    `${prefijo || "BFP-"}${String(numero || "").replace(/\D/g, "").slice(0, 12)}`;
+
+  const cambiarCategoriaProducto = (idCategoria) => {
+    const prefijo = obtenerPrefijoPorCategoria(idCategoria);
+
+    setForm((prev) => ({
+      ...prev,
+      id_categoria: idCategoria,
+      codigo_prefijo: prefijo,
+      codigo_producto: construirCodigoProducto(prefijo, prev.codigo_numero),
+    }));
+  };
+
+  const cambiarPrefijoCodigo = (prefijo) => {
+    setForm((prev) => ({
+      ...prev,
+      codigo_prefijo: prefijo,
+      codigo_producto: construirCodigoProducto(prefijo, prev.codigo_numero),
+    }));
+  };
+
+  const cambiarNumeroCodigo = (valor) => {
+    const numero = String(valor || "").replace(/\D/g, "").slice(0, 12);
+
+    setForm((prev) => ({
+      ...prev,
+      codigo_numero: numero,
+      codigo_producto: construirCodigoProducto(prev.codigo_prefijo, numero),
+    }));
+  };
+
   useEffect(() => {
     if (!form.id_categoria && categoriasProductos.length > 0) {
-      setForm((prev) => ({ ...prev, id_categoria: String(categoriasProductos[0].id_categoria) }));
+      const idInicial = String(categoriasProductos[0].id_categoria);
+      const prefijoInicial = obtenerPrefijoPorCategoria(idInicial);
+
+      setForm((prev) => ({
+        ...prev,
+        id_categoria: idInicial,
+        codigo_prefijo: prev.codigo_prefijo || prefijoInicial,
+        codigo_producto: construirCodigoProducto(prev.codigo_prefijo || prefijoInicial, prev.codigo_numero),
+      }));
     }
   }, [categoriasProductos, form.id_categoria]);
 
@@ -2690,43 +2790,23 @@ function Admin({
     return String(numero);
   };
 
-  const normalizarCodigoProducto = (valor) => {
-    const limpio = String(valor || "")
-      .toUpperCase()
-      .replace(/[^A-Z0-9-]/g, "");
-
-    if (!limpio) return "BF-";
-
-    if (!limpio.includes("-")) {
-      const prefijoSinGuion = limpio.replace(/[^A-Z]/g, "").slice(0, 5) || "BF";
-      const numerosSinGuion = limpio.replace(/\D/g, "").slice(0, 12);
-      return `${prefijoSinGuion}-${numerosSinGuion}`;
-    }
-
-    const [prefijoRaw = "", ...resto] = limpio.split("-");
-    const prefijo = prefijoRaw.replace(/[^A-Z]/g, "").slice(0, 5) || "BF";
-    const numeros = resto.join("").replace(/\D/g, "").slice(0, 12);
-
-    return `${prefijo}-${numeros}`;
-  };
-
-  const cambiarCodigoProducto = (valor) => {
-    setForm((prev) => ({
-      ...prev,
-      codigo_producto: normalizarCodigoProducto(valor),
-    }));
-  };
-
   const limpiar = () => {
+    const idInicial = categoriasProductos[0]?.id_categoria ? String(categoriasProductos[0].id_categoria) : "";
+    const prefijoInicial = obtenerPrefijoPorCategoria(idInicial);
+
     setEditando(null);
     setImagenData(null);
     setForm({
-      codigo_producto: "BF-",
+      codigo_producto: construirCodigoProducto(prefijoInicial, ""),
+      codigo_prefijo: prefijoInicial,
+      codigo_numero: "",
       nombre: "",
-      id_categoria: categoriasProductos[0]?.id_categoria ? String(categoriasProductos[0].id_categoria) : "",
+      id_categoria: idInicial,
       precio: "",
       descuento: "0",
-      stock: "",
+      stock: "0",
+      stock_movimiento: "",
+      stock_operacion: "sumar",
       presentacion: "",
       descripcion: "",
       historia: "",
@@ -2813,15 +2893,15 @@ function Admin({
 
   const guardar = async () => {
     const idEditando = editando;
-    const codigo = form.codigo_producto.trim().toUpperCase();
+    const codigo = construirCodigoProducto(form.codigo_prefijo, form.codigo_numero).trim().toUpperCase();
 
-    if (!codigo || !form.nombre || !form.precio || !form.id_categoria) {
-      mostrarToast("Completa código, nombre, categoría y precio");
+    if (!codigo || !form.codigo_numero || !form.nombre || !form.precio || !form.id_categoria) {
+      mostrarToast("Completa ID, nombre, categoría y precio");
       return;
     }
 
     if (!codigoProductoValido(codigo)) {
-      mostrarToast("El ID debe tener formato como BF-98546521");
+      mostrarToast("El ID debe tener formato como BFP-00000001");
       return;
     }
 
@@ -2841,6 +2921,24 @@ function Admin({
       return;
     }
 
+    const stockActual = Number(form.stock || 0);
+    const unidadesMovimiento = form.stock_movimiento === "" ? 0 : Number(form.stock_movimiento);
+
+    if (!Number.isInteger(unidadesMovimiento) || unidadesMovimiento < 0) {
+      mostrarToast("Las unidades de stock deben ser un número entero positivo");
+      return;
+    }
+
+    const stockFinal =
+      form.stock_operacion === "restar"
+        ? stockActual - unidadesMovimiento
+        : stockActual + unidadesMovimiento;
+
+    if (stockFinal < 0) {
+      mostrarToast("No puedes restar más unidades de las que hay en stock");
+      return;
+    }
+
     const payload = {
       codigo_producto: codigo,
       id_categoria: Number(form.id_categoria),
@@ -2850,7 +2948,7 @@ function Admin({
       descripcion: form.descripcion || "Sin descripción.",
       historia: form.historia,
       precio: Number(form.precio),
-      stock: Number(form.stock || 0),
+      stock: stockFinal,
       video: form.video || null,
       imagen_base64: imagenData?.base64 || null,
       imagen_mime: imagenData?.mime || null,
@@ -2876,9 +2974,6 @@ function Admin({
 
       const idProductoPromo = productoGuardado?.id_producto || idEditando;
 
-      // Siempre mandamos el porcentaje al servidor.
-      // 0 = quitar promoción. 1 a 15 = guardar promoción activa por 2 días.
-      // id_producto hace que funcione para TODOS los productos, no solo por nombre.
       await apiFetch("/promociones", {
         method: "POST",
         body: JSON.stringify({
@@ -2902,7 +2997,6 @@ function Admin({
       );
 
       limpiar();
-      // No hacemos cambios falsos en pantalla: recargamos desde la BD para que admin y cliente coincidan.
       await recargarProductos();
     } catch (error) {
       mostrarToast(error.message || "No se pudo guardar el producto en la BD");
@@ -2914,13 +3008,19 @@ function Admin({
     setEditando(p.id_producto);
     setImagenData({ preview: p.imagen });
 
+    const codigoPartes = separarCodigoProducto(p.codigo_producto || "");
+
     setForm({
-      codigo_producto: p.codigo_producto || "",
+      codigo_producto: construirCodigoProducto(codigoPartes.prefijo, codigoPartes.numero),
+      codigo_prefijo: codigoPartes.prefijo || obtenerPrefijoPorCategoria(p.id_categoria),
+      codigo_numero: codigoPartes.numero || "",
       nombre: p.nombre,
       id_categoria: String(p.id_categoria),
       precio: String(p.precio),
       descuento: p.promocion?.descuento ? String(Math.min(15, Math.max(0, Number(p.promocion.descuento)))) : "0",
       stock: String(p.stock || 0),
+      stock_movimiento: "",
+      stock_operacion: "sumar",
       presentacion: p.presentacion || "",
       descripcion: p.descripcion || "",
       historia: p.historia || "",
@@ -3224,11 +3324,26 @@ function Admin({
 
             <label className="admin-field">
               <span>ID del producto</span>
-              <input
-                placeholder="Ejemplo: BF-98546521"
-                value={form.codigo_producto}
-                onChange={(e) => cambiarCodigoProducto(e.target.value)}
-              />
+              <div className="codigo-producto-row">
+                <select
+                  value={form.codigo_prefijo}
+                  onChange={(e) => cambiarPrefijoCodigo(e.target.value)}
+                >
+                  {PREFIJOS_PRODUCTO.map((item) => (
+                    <option key={item.prefijo} value={item.prefijo}>
+                      {item.prefijo} {item.nombre}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  placeholder="Número, ejemplo: 00000001"
+                  value={form.codigo_numero}
+                  inputMode="numeric"
+                  onChange={(e) => cambiarNumeroCodigo(e.target.value)}
+                />
+              </div>
+              <small className="admin-help">ID final: {construirCodigoProducto(form.codigo_prefijo, form.codigo_numero)}</small>
             </label>
 
             <label className="admin-field">
@@ -3242,7 +3357,7 @@ function Admin({
 
             <label className="admin-field">
               <span>Categoría</span>
-              <select value={form.id_categoria} onChange={(e) => setForm({ ...form, id_categoria: e.target.value })}>
+              <select value={form.id_categoria} onChange={(e) => cambiarCategoriaProducto(e.target.value)}>
                 {categoriasProductos.map((c) => (
                   <option value={c.id_categoria} key={c.id}>{c.nombre}</option>
                 ))}
@@ -3290,14 +3405,16 @@ function Admin({
 
             <div className="two admin-two">
               <label className="admin-field">
-                <span>Stock</span>
+                <span>Stock actual</span>
                 <input
+                  className="stock-readonly"
                   placeholder="Cantidad disponible"
                   type="number"
                   min="0"
                   value={form.stock}
-                  onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                  readOnly
                 />
+                <small className="admin-help">El stock actual no se edita directo.</small>
               </label>
 
               <label className="admin-field">
@@ -3307,6 +3424,34 @@ function Admin({
                   value={form.presentacion}
                   onChange={(e) => setForm({ ...form, presentacion: e.target.value })}
                 />
+              </label>
+            </div>
+
+            <div className="two admin-two stock-movement-row">
+              <label className="admin-field">
+                <span>Unidades para ajustar stock</span>
+                <input
+                  placeholder="Ejemplo: 10"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={form.stock_movimiento}
+                  onChange={(e) => {
+                    const unidades = String(e.target.value || "").replace(/\D/g, "");
+                    setForm({ ...form, stock_movimiento: unidades });
+                  }}
+                />
+              </label>
+
+              <label className="admin-field">
+                <span>Acción de stock</span>
+                <select
+                  value={form.stock_operacion}
+                  onChange={(e) => setForm({ ...form, stock_operacion: e.target.value })}
+                >
+                  <option value="sumar">Sumar</option>
+                  <option value="restar">Restar</option>
+                </select>
               </label>
             </div>
 

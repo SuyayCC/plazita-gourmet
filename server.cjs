@@ -653,7 +653,7 @@ app.post("/api/productos", async (req, res) => {
     }
 
     if (!codigoProductoValido(codigo_producto)) {
-      return res.status(400).json({ message: "El código debe tener formato como BF-98546521" });
+      return res.status(400).json({ message: "El código debe tener formato como BFP-00000001" });
     }
 
     if (!Number.isFinite(precio) || precio < 0) {
@@ -717,7 +717,7 @@ app.put("/api/productos/:id", async (req, res) => {
     }
 
     if (!codigoProductoValido(codigo_producto)) {
-      return res.status(400).json({ message: "El código debe tener formato como BF-98546521" });
+      return res.status(400).json({ message: "El código debe tener formato como BFP-00000001" });
     }
 
     const params = [

@@ -1029,4 +1029,40 @@ textarea {
   padding: 14px 16px;
 }
 
+/* ===== ID por categoría y ajuste de stock ===== */
+.admin-form .codigo-producto-row {
+  display: grid;
+  grid-template-columns: minmax(135px, 0.9fr) minmax(160px, 1.1fr);
+  gap: 12px;
+  align-items: center;
+}
 
+.admin-form .codigo-producto-row select,
+.admin-form .codigo-producto-row input {
+  margin-bottom: 0;
+}
+
+.admin-form .admin-help {
+  display: block;
+  margin-top: 8px;
+  color: #5b8c3b;
+  font-weight: 800;
+  font-size: 14px;
+}
+
+.admin-form .stock-readonly {
+  background: #f7f7f7;
+  color: #555;
+  cursor: not-allowed;
+}
+
+.admin-form .stock-movement-row {
+  margin-top: -4px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 700px) {
+  .admin-form .codigo-producto-row {
+    grid-template-columns: 1fr;
+  }
+}
